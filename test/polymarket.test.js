@@ -74,7 +74,7 @@ test("evaluatePolymarketStep prioritizes arbitrage pair match and enforces unhed
   assert.equal(arb.side, "DOWN");
   assert.match(arb.reason, /^ARB_MATCH/);
 
-  // Directional edge buy blocked when unhedged exposure already >= maxUnhedgedUsd
+  // Directional edge buy blocked when unhedged exposure already >= maxUnhedgedUsd / maxUnhedgedShares
   const capped = evaluatePolymarketStep({
     fairPUp: 0.8,
     upAsks: [{ price: "0.50", size: "500" }],
@@ -85,8 +85,22 @@ test("evaluatePolymarketStep prioritizes arbitrage pair match and enforces unhed
     downCostUsd: 0,
     remainingSec: 120,
     maxUnhedgedUsd: 110,
+    maxUnhedgedShares: 85,
   });
   assert.equal(capped, null);
+
+  // Never hedge opposite side at guaranteed loss (downVwap=0.14 + upAsk=0.97 = 1.11 > 1.00)
+  const noLossHedge = evaluatePolymarketStep({
+    fairPUp: 0.99,
+    upAsks: [{ price: "0.97", size: "500" }],
+    downAsks: [{ price: "0.04", size: "500" }],
+    upShares: 0,
+    upCostUsd: 0,
+    downShares: 80,
+    downCostUsd: 11.2,
+    remainingSec: 80,
+  });
+  assert.equal(noLossHedge, null);
 });
 
 test("ApexDb records Polymarket fills and settles window PnL accurately", () => {

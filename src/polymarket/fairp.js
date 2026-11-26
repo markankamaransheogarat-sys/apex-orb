@@ -155,6 +155,14 @@ function simulateBookBuy(rawAsks, targetUsd) {
   };
 }
 
+function bestAskOf(rawAsks) {
+  if (!Array.isArray(rawAsks) || !rawAsks.length) return null;
+  const prices = rawAsks
+    .map((a) => Number(a.price))
+    .filter((p) => Number.isFinite(p) && p > 0 && p < 1);
+  return prices.length ? Math.min(...prices) : null;
+}
+
 function evaluatePolymarketStep({
   fairPUp,
   upAsks,
@@ -164,84 +172,99 @@ function evaluatePolymarketStep({
   downShares = 0,
   downCostUsd = 0,
   remainingSec = 300,
+  targetShares = 35,
   orderSizeUsd = 25,
-  minEdge = 0.035,
-  maxUnhedgedUsd = 110,
+  minEdge = 0.045,
+  maxUnhedgedUsd = 90,
+  maxUnhedgedShares = 85,
 }) {
   if (remainingSec < 18 || remainingSec > 296) return null;
 
   const fairPDown = 1 - fairPUp;
-  const upFill = simulateBookBuy(upAsks, orderSizeUsd);
-  const downFill = simulateBookBuy(downAsks, orderSizeUsd);
-
   const upVwap = upShares > 0 ? upCostUsd / upShares : null;
   const downVwap = downShares > 0 ? downCostUsd / downShares : null;
   const netUnhedgedUsd = Math.abs(upCostUsd - downCostUsd);
-  const totalShares = upShares + downShares;
-  const imbalance =
-    totalShares > 0 ? Math.abs(upShares - downShares) / totalShares : 0;
+  const netUnhedgedShares = Math.abs(upShares - downShares);
 
-  // Priority 1: Pair-Match Arbitrage Lock (buying opposite side makes UP + DOWN <= $0.985)
-  if (upShares > downShares + 2 && downFill && upVwap != null) {
-    const pairCost = upVwap + downFill.effectivePrice;
-    if (pairCost <= 0.985) {
-      return {
-        side: "DOWN",
-        fill: downFill,
-        fairP: fairPDown,
-        edge: Number((1 - pairCost).toFixed(4)),
-        reason: `ARB_MATCH pair=${(pairCost * 100).toFixed(1)}¢ (<98.5¢)`,
-      };
-    }
-    if (imbalance >= 0.3 && fairPDown - downFill.effectivePrice >= 0.015) {
-      return {
-        side: "DOWN",
-        fill: downFill,
-        fairP: fairPDown,
-        edge: Number((fairPDown - downFill.effectivePrice).toFixed(4)),
-        reason: `FLIP_HEDGE imbal=${(imbalance * 100).toFixed(0)}%`,
-      };
+  // Priority 1: Share-capped Arbitrage Pair Match (ONLY when UP + DOWN <= $0.985)
+  if (upShares > downShares + 4 && upVwap != null) {
+    const dnBest = bestAskOf(downAsks);
+    if (dnBest != null) {
+      const matchShares = Math.min(40, upShares - downShares);
+      const matchUsd = Math.min(
+        orderSizeUsd,
+        Math.max(5.5, matchShares * dnBest * 1.03),
+      );
+      const downFill = simulateBookBuy(downAsks, matchUsd);
+      if (downFill) {
+        const pairCost = upVwap + downFill.effectivePrice;
+        if (pairCost <= 0.985) {
+          return {
+            side: "DOWN",
+            fill: downFill,
+            fairP: fairPDown,
+            edge: Number((1 - pairCost).toFixed(4)),
+            reason: `ARB_MATCH pair=${(pairCost * 100).toFixed(1)}¢ (<98.5¢)`,
+          };
+        }
+      }
     }
   }
 
-  if (downShares > upShares + 2 && upFill && downVwap != null) {
-    const pairCost = downVwap + upFill.effectivePrice;
-    if (pairCost <= 0.985) {
-      return {
-        side: "UP",
-        fill: upFill,
-        fairP: fairPUp,
-        edge: Number((1 - pairCost).toFixed(4)),
-        reason: `ARB_MATCH pair=${(pairCost * 100).toFixed(1)}¢ (<98.5¢)`,
-      };
-    }
-    if (imbalance >= 0.3 && fairPUp - upFill.effectivePrice >= 0.015) {
-      return {
-        side: "UP",
-        fill: upFill,
-        fairP: fairPUp,
-        edge: Number((fairPUp - upFill.effectivePrice).toFixed(4)),
-        reason: `FLIP_HEDGE imbal=${(imbalance * 100).toFixed(0)}%`,
-      };
+  if (downShares > upShares + 4 && downVwap != null) {
+    const upBest = bestAskOf(upAsks);
+    if (upBest != null) {
+      const matchShares = Math.min(40, downShares - upShares);
+      const matchUsd = Math.min(
+        orderSizeUsd,
+        Math.max(5.5, matchShares * upBest * 1.03),
+      );
+      const upFill = simulateBookBuy(upAsks, matchUsd);
+      if (upFill) {
+        const pairCost = downVwap + upFill.effectivePrice;
+        if (pairCost <= 0.985) {
+          return {
+            side: "UP",
+            fill: upFill,
+            fairP: fairPUp,
+            edge: Number((1 - pairCost).toFixed(4)),
+            reason: `ARB_MATCH pair=${(pairCost * 100).toFixed(1)}¢ (<98.5¢)`,
+          };
+        }
+      }
     }
   }
 
-  // Priority 2: Directional +EV Edge Entry (respecting maxUnhedgedUsd, two-sided book & tail guards)
-  if (remainingSec < 35 || !upFill || !downFill) return null;
+  // Priority 2: Share-sized Directional +EV Edge Entry (two-sided book, mid-range odds, capped imbalance)
+  const upBest = bestAskOf(upAsks);
+  const downBest = bestAskOf(downAsks);
+  if (remainingSec < 45 || upBest == null || downBest == null) return null;
+
+  const upFill = simulateBookBuy(
+    upAsks,
+    Math.min(orderSizeUsd, Math.max(6, targetShares * upBest)),
+  );
+  const downFill = simulateBookBuy(
+    downAsks,
+    Math.min(orderSizeUsd, Math.max(6, targetShares * downBest)),
+  );
+  if (!upFill || !downFill) return null;
 
   const upEdge =
-    upFill.effectivePrice >= 0.04 && upFill.effectivePrice <= 0.96
+    upFill.effectivePrice >= 0.2 && upFill.effectivePrice <= 0.86
       ? fairPUp - upFill.effectivePrice
       : -1;
   const downEdge =
-    downFill.effectivePrice >= 0.04 && downFill.effectivePrice <= 0.96
+    downFill.effectivePrice >= 0.2 && downFill.effectivePrice <= 0.86
       ? fairPDown - downFill.effectivePrice
       : -1;
 
   if (upEdge >= downEdge && upEdge >= minEdge) {
     if (
+      upShares - downShares < maxUnhedgedShares &&
       upCostUsd - downCostUsd < maxUnhedgedUsd &&
-      netUnhedgedUsd < maxUnhedgedUsd
+      netUnhedgedUsd < maxUnhedgedUsd &&
+      netUnhedgedShares < maxUnhedgedShares
     ) {
       return {
         side: "UP",
@@ -255,8 +278,10 @@ function evaluatePolymarketStep({
 
   if (downEdge > upEdge && downEdge >= minEdge) {
     if (
+      downShares - upShares < maxUnhedgedShares &&
       downCostUsd - upCostUsd < maxUnhedgedUsd &&
-      netUnhedgedUsd < maxUnhedgedUsd
+      netUnhedgedUsd < maxUnhedgedUsd &&
+      netUnhedgedShares < maxUnhedgedShares
     ) {
       return {
         side: "DOWN",
