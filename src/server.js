@@ -304,11 +304,8 @@ function createApp(opts = {}) {
       }
 
       if (req.method === "POST" && pathname === "/api/pm/reset") {
-        db.resetPmData();
-        return sendJson(res, 200, {
-          ok: true,
-          state: pm ? pm.snapshot() : { stats: db.pmStats() },
-        });
+        const state = pm ? await pm.reset() : { stats: db.pmStats() };
+        return sendJson(res, 200, { ok: true, state });
       }
 
       // Static files from public/

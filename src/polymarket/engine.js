@@ -135,21 +135,55 @@ class PolymarketPaperEngine extends EventEmitter {
     return this.enabled;
   }
 
+  async reset() {
+    this.db.resetPmData();
+    this.lastTradeAt.clear();
+    for (const a of ASSETS) {
+      const st = this.state.get(a.asset);
+      st.window = null;
+      st.history = [];
+    }
+    await this._syncWindows();
+    this.emit("status", this.snapshot());
+    return this.snapshot();
+  }
+
   async _bootstrapSpots() {
     await Promise.all(
       ASSETS.map(async (a) => {
-        const data = await fetchJson(
-          `https://api.binance.com/api/v3/ticker/bookTicker?symbol=${a.binanceSym}`,
-        );
-        if (!data) return;
-        const bid = Number(data.bidPrice);
-        const ask = Number(data.askPrice);
-        if (bid > 0 && ask > 0) {
-          const st = this.state.get(a.asset);
-          st.bid = bid;
-          st.ask = ask;
-          st.spot = (bid + ask) / 2;
-          st.lastSpotTs = Date.now();
+        const [data, klines] = await Promise.all([
+          fetchJson(
+            `https://api.binance.com/api/v3/ticker/bookTicker?symbol=${a.binanceSym}`,
+          ),
+          fetchJson(
+            `https://api.binance.com/api/v3/klines?symbol=${a.binanceSym}&interval=1m&limit=20`,
+          ),
+        ]);
+        const st = this.state.get(a.asset);
+        if (data) {
+          const bid = Number(data.bidPrice);
+          const ask = Number(data.askPrice);
+          if (bid > 0 && ask > 0) {
+            st.bid = bid;
+            st.ask = ask;
+            st.spot = (bid + ask) / 2;
+            st.lastSpotTs = Date.now();
+          }
+        }
+        if (Array.isArray(klines) && klines.length >= 5) {
+          const rets = [];
+          for (let i = 1; i < klines.length; i++) {
+            const c0 = Number(klines[i - 1][4]);
+            const c1 = Number(klines[i][4]);
+            if (c0 > 0 && c1 > 0) rets.push(Math.log(c1 / c0));
+          }
+          if (rets.length >= 3) {
+            const mean = rets.reduce((s, r) => s + r, 0) / rets.length;
+            const var1m =
+              rets.reduce((s, r) => s + Math.pow(r - mean, 2), 0) / rets.length;
+            const sigmaPerSec = Math.sqrt(var1m / 60);
+            st.sigma = Math.min(0.002, Math.max(a.defaultSigma, sigmaPerSec));
+          }
         }
       }),
     );
