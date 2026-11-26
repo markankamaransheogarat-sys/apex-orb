@@ -20,6 +20,7 @@ const { isAddress } = require("./solana/util");
 const { scanToken } = require("./engine/scanner");
 const { LaunchRadar } = require("./engine/radar");
 const { refreshPaperTrades } = require("./engine/paper");
+const { PolymarketPaperEngine } = require("./polymarket/engine");
 
 const PUBLIC_DIR = path.resolve(__dirname, "..", "public");
 
@@ -70,6 +71,8 @@ function createApp(opts = {}) {
   const db = opts.db || new ApexDb(opts.dbPath);
   const rpc = opts.rpc || new SolanaRpcPool(opts.rpcEndpoints || RPC_ENDPOINTS);
   const radar = opts.radar !== undefined ? opts.radar : new LaunchRadar({ db });
+  const pm =
+    opts.pm !== undefined ? opts.pm : new PolymarketPaperEngine({ db });
   const sseClients = new Set();
 
   function broadcast(event, payload) {
@@ -86,6 +89,12 @@ function createApp(opts = {}) {
   if (radar) {
     radar.on("launch", (launch) => broadcast("launch", launch));
     radar.on("status", (st) => broadcast("radar_status", st));
+  }
+  if (pm) {
+    pm.on("pm_tick", (snap) => broadcast("pm_tick", snap));
+    pm.on("pm_fill", (fill) => broadcast("pm_fill", fill));
+    pm.on("pm_settled", (win) => broadcast("pm_settled", win));
+    pm.on("status", (snap) => broadcast("pm_tick", snap));
   }
 
   const server = http.createServer(async (req, res) => {
@@ -270,6 +279,38 @@ function createApp(opts = {}) {
         return sendJson(res, 200, { ok: true, trades: db.listPaperTrades(50) });
       }
 
+      if (req.method === "GET" && pathname === "/api/pm/state") {
+        if (!pm) {
+          return sendJson(res, 200, {
+            enabled: false,
+            binanceConnected: false,
+            stats: db.pmStats(),
+            markets: [],
+            recentTrades: db.listPmTrades(30),
+            recentWindows: db.listPmWindows(24),
+          });
+        }
+        return sendJson(res, 200, pm.snapshot());
+      }
+
+      if (req.method === "POST" && pathname === "/api/pm/toggle") {
+        const body = await readBody(req);
+        if (!pm) return sendJson(res, 400, { error: "PM engine disabled" });
+        const enabled =
+          body.enabled !== undefined
+            ? pm.setEnabled(body.enabled)
+            : pm.setEnabled(!pm.enabled);
+        return sendJson(res, 200, { ok: true, enabled, state: pm.snapshot() });
+      }
+
+      if (req.method === "POST" && pathname === "/api/pm/reset") {
+        db.resetPmData();
+        return sendJson(res, 200, {
+          ok: true,
+          state: pm ? pm.snapshot() : { stats: db.pmStats() },
+        });
+      }
+
       // Static files from public/
       if (req.method === "GET" || req.method === "HEAD") {
         const rel =
@@ -302,6 +343,7 @@ function createApp(opts = {}) {
 
   function start(listenPort = PORT, listenHost = HOST) {
     if (radar) radar.start();
+    if (pm) pm.start();
     paperTimer = setInterval(() => {
       refreshPaperTrades(db).catch(() => {});
     }, 45_000);
@@ -320,6 +362,7 @@ function createApp(opts = {}) {
     if (paperTimer) clearInterval(paperTimer);
     if (heartbeatTimer) clearInterval(heartbeatTimer);
     if (radar) radar.stop();
+    if (pm) pm.stop();
     for (const res of sseClients) {
       try {
         res.end();
@@ -329,7 +372,7 @@ function createApp(opts = {}) {
     return new Promise((resolve) => server.close(() => resolve()));
   }
 
-  return { server, db, rpc, radar, start, stop };
+  return { server, db, rpc, radar, pm, start, stop };
 }
 
 if (require.main === module) {

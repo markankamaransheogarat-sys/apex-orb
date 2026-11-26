@@ -1,9 +1,12 @@
 "use strict";
 
 const state = {
+  mode: "solana",
   currentScan: null,
   activeTab: "scans",
   radarFeed: "trending",
+  pmAsset: "BTC",
+  pmState: null,
   sphere: {
     rotY: 0.4,
     rotX: 0.25,
@@ -776,6 +779,27 @@ function initEvents() {
     });
   });
 
+  document.querySelectorAll(".mode-btn").forEach((btn) => {
+    btn.addEventListener("click", () => switchMode(btn.dataset.mode));
+  });
+
+  $("pmToggleBtn").addEventListener("click", async () => {
+    const res = await api("/api/pm/toggle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    if (res.state) {
+      state.pmState = res.state;
+      renderPolymarket();
+    }
+  });
+
+  $("pmResetBtn").addEventListener("click", async () => {
+    await api("/api/pm/reset", { method: "POST" });
+    await loadPolymarketState();
+  });
+
   // SSE stream
   const es = new EventSource("/api/stream");
   es.addEventListener("launch", (ev) => {
@@ -789,8 +813,262 @@ function initEvents() {
     const d = JSON.parse(ev.data);
     appendTrace(`[+${d.t}ms] ${d.msg}`, d.level);
   });
+  es.addEventListener("pm_tick", (ev) => {
+    state.pmState = JSON.parse(ev.data);
+    if (state.mode === "polymarket") renderPolymarket();
+  });
+  es.addEventListener("pm_fill", () => {
+    if (state.mode === "polymarket") loadPolymarketState();
+  });
+  es.addEventListener("pm_settled", () => {
+    if (state.mode === "polymarket") loadPolymarketState();
+  });
   es.addEventListener("radar_status", () => loadHealth());
   es.addEventListener("heartbeat", () => loadHealth());
+}
+
+function switchMode(mode) {
+  state.mode = mode;
+  document
+    .querySelectorAll(".mode-btn")
+    .forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
+  $("solanaView").classList.toggle("hidden", mode !== "solana");
+  $("solanaDeck").classList.toggle("hidden", mode !== "solana");
+  $("pmView").classList.toggle("hidden", mode !== "polymarket");
+  if (mode === "polymarket") {
+    loadPolymarketState();
+  }
+}
+
+async function loadPolymarketState() {
+  try {
+    state.pmState = await api("/api/pm/state");
+    renderPolymarket();
+  } catch {}
+}
+
+function renderPolymarket() {
+  const pm = state.pmState;
+  if (!pm) return;
+  const s = pm.stats || {};
+  $("pmPnl").textContent = fmtUsd(s.realizedPnlUsd);
+  $("pmPnl").className = `v ${s.realizedPnlUsd >= 0 ? "c-good" : "c-bad"}`;
+  $("pmMatched").textContent = `${s.matchedPct ?? 0}%`;
+  $("pmWinRate").textContent = `${s.winRatePct ?? 0}%`;
+  $("pmWindows").textContent = `${s.windows ?? 0} (${s.settled ?? 0})`;
+  $("pmFills").textContent = s.tradesCount ?? 0;
+  $("pmVol").textContent = fmtUsd(s.totalVolumeUsd);
+  $("pmBinance").textContent = pm.binanceConnected ? "LIVE" : "OFFLINE";
+  $("pmBinance").className = `v ${pm.binanceConnected ? "c-good" : "c-bad"}`;
+
+  const tbtn = $("pmToggleBtn");
+  tbtn.textContent = pm.enabled ? "AUTO PAPER: ON" : "AUTO PAPER: PAUSED";
+  tbtn.className = `pm-btn ${pm.enabled ? "active" : ""}`;
+
+  const cards = pm.markets || [];
+  $("pmCards").innerHTML = cards
+    .map((m) => {
+      const w = m.window || {};
+      const upAsk =
+        m.upBestAsk != null ? `${(m.upBestAsk * 100).toFixed(1)}¢` : "—";
+      const dnAsk =
+        m.downBestAsk != null ? `${(m.downBestAsk * 100).toFixed(1)}¢` : "—";
+      const fp = (m.fairPUp * 100).toFixed(1);
+      const spotTxt = m.spot
+        ? `$${Number(m.spot).toLocaleString(undefined, { maximumFractionDigits: 3 })}`
+        : "—";
+      const openTxt = w.open_spot
+        ? `$${Number(w.open_spot).toLocaleString(undefined, { maximumFractionDigits: 3 })}`
+        : "—";
+      const mm = Math.floor((m.remainingSec || 0) / 60);
+      const ss = String((m.remainingSec || 0) % 60).padStart(2, "0");
+      return `
+        <div class="pm-card ${state.pmAsset === m.asset ? "selected" : ""}" data-asset="${m.asset}">
+          <div class="pm-card-top">
+            <span class="pm-card-asset">${m.asset} 5M</span>
+            <span class="badge">${mm}:${ss}</span>
+          </div>
+          <div class="pm-card-grid">
+            <div class="mkt-cell"><span class="k">SPOT / STRIKE</span><span class="v">${spotTxt} / ${openTxt}</span></div>
+            <div class="mkt-cell"><span class="k">KALMAN FAIR P(UP)</span><span class="v c-good">${fp}%</span></div>
+            <div class="mkt-cell"><span class="k">ASK UP / DOWN</span><span class="v">${upAsk} / ${dnAsk}</span></div>
+            <div class="mkt-cell"><span class="k">UP / DN / MATCH</span><span class="v">${Math.round(w.up_shares || 0)} / ${Math.round(w.down_shares || 0)} / <span class="c-good">${Math.round(w.matched_shares || 0)}</span></span></div>
+          </div>
+        </div>
+      `;
+    })
+    .join("");
+
+  $("pmCards")
+    .querySelectorAll(".pm-card")
+    .forEach((el) => {
+      el.addEventListener("click", () => {
+        state.pmAsset = el.dataset.asset;
+        renderPolymarket();
+      });
+    });
+
+  const sel = cards.find((m) => m.asset === state.pmAsset) || cards[0];
+  if (sel) {
+    $("pmSelAsset").textContent = sel.asset;
+    const edgeUp =
+      sel.upBestAsk != null ? (sel.fairPUp - sel.upBestAsk) * 100 : null;
+    const edgeDn =
+      sel.downBestAsk != null ? (sel.fairPDown - sel.downBestAsk) * 100 : null;
+    const bestEdge = Math.max(edgeUp ?? -99, edgeDn ?? -99);
+    $("pmEdgeBadge").textContent =
+      Number.isFinite(bestEdge) && bestEdge > -90
+        ? `BEST EDGE ${bestEdge >= 0 ? "+" : ""}${bestEdge.toFixed(1)}¢`
+        : "—";
+    $("pmEdgeBadge").className = `badge ${bestEdge >= 3.5 ? "good" : ""}`;
+    $("pmImbalBadge").textContent = `IMBAL ${sel.imbalancePct}%`;
+    drawPmOscillator(sel);
+    drawPmInventory(cards);
+  }
+
+  $("pmTradesBox").innerHTML = (pm.recentTrades || []).length
+    ? `<table><thead><tr><th>ASSET</th><th>SIDE</th><th>SHARES</th><th>PRICE</th><th>FAIR P</th><th>REASON</th></tr></thead><tbody>
+        ${pm.recentTrades
+          .map(
+            (t) => `<tr>
+            <td><strong>${esc(t.asset)}</strong></td>
+            <td class="${t.side === "UP" ? "c-good" : "c-bad"}">${esc(t.side)}</td>
+            <td>${Number(t.shares).toFixed(1)}</td>
+            <td>${(t.price * 100).toFixed(1)}¢</td>
+            <td>${(t.fair_p * 100).toFixed(1)}%</td>
+            <td class="muted">${esc(t.reason)}</td>
+          </tr>`,
+          )
+          .join("")}
+      </tbody></table>`
+    : '<div class="empty">Ожидание +EV edge ≥ 3.5¢ или арбитражной пары UP+DOWN ≤ 98.5¢...</div>';
+
+  $("pmWindowsBox").innerHTML = (pm.recentWindows || []).length
+    ? `<table><thead><tr><th>MARKET</th><th>STATUS</th><th>MATCHED</th><th>COST</th><th>PAYOUT</th><th>PNL</th></tr></thead><tbody>
+        ${pm.recentWindows
+          .map((w) => {
+            const cost = (w.up_cost_usd || 0) + (w.down_cost_usd || 0);
+            return `<tr>
+              <td><strong>${esc(w.asset)}</strong> <span class="muted">${esc(w.slug.slice(-10))}</span></td>
+              <td>${w.status === "SETTLED" ? `<span class="badge ${w.winner === "UP" ? "good" : "bad"}">${w.winner} WON</span>` : '<span class="badge">OPEN</span>'}</td>
+              <td>${Math.round(w.matched_shares || 0)} sh</td>
+              <td>${fmtUsd(cost)}</td>
+              <td>${fmtUsd(w.payout_usd)}</td>
+              <td class="${w.realized_pnl_usd >= 0 ? "c-good" : "c-bad"}">${fmtUsd(w.realized_pnl_usd)}</td>
+            </tr>`;
+          })
+          .join("")}
+      </tbody></table>`
+    : '<div class="empty">Нет активных 5-минутных окон</div>';
+}
+
+function drawPmOscillator(market) {
+  const canvas = $("pmOscCanvas");
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = canvas.clientWidth || 460;
+  const h = 220;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.fillStyle = "#070b10";
+  ctx.fillRect(0, 0, w, h);
+
+  // Mid 50% grid line
+  ctx.strokeStyle = "#1d2a3a";
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(0, h / 2);
+  ctx.lineTo(w, h / 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  const hist = market.history || [];
+  if (hist.length < 2) {
+    ctx.fillStyle = "#6e839b";
+    ctx.font = "11px monospace";
+    ctx.fillText("Collecting Kalman Fair-P & CLOB ticks...", 16, h / 2 - 8);
+    return;
+  }
+
+  const plotLine = (getter, color, width = 1.8) => {
+    ctx.beginPath();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    let started = false;
+    hist.forEach((pt, idx) => {
+      const val = getter(pt);
+      if (val == null) return;
+      const x = (idx / Math.max(1, hist.length - 1)) * (w - 20) + 10;
+      const y = h - 14 - val * (h - 28);
+      if (!started) {
+        ctx.moveTo(x, y);
+        started = true;
+      } else {
+        ctx.lineTo(x, y);
+      }
+    });
+    ctx.stroke();
+  };
+
+  plotLine((p) => p.upAsk, "#f59e0b", 1.5);
+  plotLine((p) => (p.downAsk != null ? 1 - p.downAsk : null), "#d946ef", 1.2);
+  plotLine((p) => p.fairP, "#10b981", 2.2);
+
+  ctx.font = "10px monospace";
+  ctx.fillStyle = "#10b981";
+  ctx.fillText("— Kalman Fair P(UP)", 12, 16);
+  ctx.fillStyle = "#f59e0b";
+  ctx.fillText("— UP Ask", 150, 16);
+  ctx.fillStyle = "#d946ef";
+  ctx.fillText("— Implied (1 - DN Ask)", 225, 16);
+}
+
+function drawPmInventory(cards) {
+  const canvas = $("pmInvCanvas");
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = canvas.clientWidth || 460;
+  const h = 220;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.fillStyle = "#070b10";
+  ctx.fillRect(0, 0, w, h);
+
+  const rowH = 42;
+  cards.forEach((m, idx) => {
+    const win = m.window || {};
+    const up = win.up_shares || 0;
+    const dn = win.down_shares || 0;
+    const match = win.matched_shares || 0;
+    const maxVal = Math.max(40, up, dn);
+    const y = 24 + idx * rowH;
+
+    ctx.fillStyle = "#dce6f2";
+    ctx.font = "11px monospace";
+    ctx.fillText(m.asset, 14, y + 14);
+
+    const barX = 64;
+    const barW = w - 190;
+    ctx.fillStyle = "#111926";
+    ctx.fillRect(barX, y, barW, 18);
+
+    const upW = (up / maxVal) * (barW / 2);
+    const dnW = (dn / maxVal) * (barW / 2);
+    ctx.fillStyle = "rgba(16, 185, 129, 0.75)";
+    ctx.fillRect(barX, y + 2, upW, 6);
+    ctx.fillStyle = "rgba(239, 68, 68, 0.75)";
+    ctx.fillRect(barX, y + 10, dnW, 6);
+
+    ctx.fillStyle = "#9eb3c9";
+    ctx.font = "10px monospace";
+    ctx.fillText(
+      `UP:${Math.round(up)} DN:${Math.round(dn)} M:${Math.round(match)}`,
+      barX + barW + 8,
+      y + 13,
+    );
+  });
 }
 
 async function bootstrap() {

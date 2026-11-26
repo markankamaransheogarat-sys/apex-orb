@@ -138,6 +138,7 @@ test("HTTP API scans mocked token, updates Operator Memory and manages paper tra
   const app = createApp({
     dbPath: ":memory:",
     radar: null,
+    pm: null,
     rpc: makeMockRpc(mint, holders),
   });
 

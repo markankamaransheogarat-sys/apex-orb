@@ -99,6 +99,43 @@ class ApexDb {
         opened_at INTEGER NOT NULL,
         closed_at INTEGER
       );
+
+      CREATE TABLE IF NOT EXISTS pm_windows (
+        slug TEXT PRIMARY KEY,
+        asset TEXT NOT NULL,
+        title TEXT,
+        start_ts INTEGER NOT NULL,
+        end_ts INTEGER NOT NULL,
+        open_spot REAL,
+        up_token_id TEXT NOT NULL,
+        down_token_id TEXT NOT NULL,
+        up_shares REAL NOT NULL DEFAULT 0,
+        up_cost_usd REAL NOT NULL DEFAULT 0,
+        down_shares REAL NOT NULL DEFAULT 0,
+        down_cost_usd REAL NOT NULL DEFAULT 0,
+        matched_shares REAL NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'OPEN',
+        winner TEXT,
+        payout_usd REAL NOT NULL DEFAULT 0,
+        realized_pnl_usd REAL NOT NULL DEFAULT 0,
+        settled_at INTEGER
+      );
+
+      CREATE TABLE IF NOT EXISTS pm_trades (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        window_slug TEXT NOT NULL,
+        asset TEXT NOT NULL,
+        side TEXT NOT NULL,
+        shares REAL NOT NULL,
+        price REAL NOT NULL,
+        fee_usd REAL NOT NULL DEFAULT 0,
+        cost_usd REAL NOT NULL,
+        fair_p REAL NOT NULL,
+        edge REAL NOT NULL,
+        reason TEXT NOT NULL,
+        ts INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_pm_trades_ts ON pm_trades(ts DESC);
     `);
   }
 
@@ -351,6 +388,175 @@ class ApexDb {
     return this.db
       .prepare("SELECT * FROM paper_trades ORDER BY opened_at DESC LIMIT ?")
       .all(limit);
+  }
+
+  upsertPmWindow(w) {
+    this.db
+      .prepare(
+        `
+      INSERT INTO pm_windows (
+        slug, asset, title, start_ts, end_ts, open_spot, up_token_id, down_token_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(slug) DO UPDATE SET
+        open_spot = COALESCE(pm_windows.open_spot, excluded.open_spot),
+        title = COALESCE(excluded.title, pm_windows.title)
+    `,
+      )
+      .run(
+        w.slug,
+        w.asset,
+        w.title || null,
+        w.startTs,
+        w.endTs,
+        w.openSpot ?? null,
+        w.upTokenId,
+        w.downTokenId,
+      );
+    return this.db
+      .prepare("SELECT * FROM pm_windows WHERE slug = ?")
+      .get(w.slug);
+  }
+
+  getPmWindow(slug) {
+    return (
+      this.db.prepare("SELECT * FROM pm_windows WHERE slug = ?").get(slug) ||
+      null
+    );
+  }
+
+  getOpenPmWindows() {
+    return this.db
+      .prepare(
+        "SELECT * FROM pm_windows WHERE status = 'OPEN' ORDER BY end_ts ASC",
+      )
+      .all();
+  }
+
+  listPmWindows(limit = 40) {
+    return this.db
+      .prepare("SELECT * FROM pm_windows ORDER BY start_ts DESC LIMIT ?")
+      .all(limit);
+  }
+
+  recordPmFill(fill) {
+    const win = this.getPmWindow(fill.windowSlug);
+    if (!win || win.status !== "OPEN") return null;
+
+    this.db
+      .prepare(
+        `
+      INSERT INTO pm_trades (
+        window_slug, asset, side, shares, price, fee_usd, cost_usd, fair_p, edge, reason, ts
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+      )
+      .run(
+        fill.windowSlug,
+        fill.asset,
+        fill.side,
+        fill.shares,
+        fill.price,
+        fill.feeUsd,
+        fill.costUsd,
+        fill.fairP,
+        fill.edge,
+        fill.reason,
+        fill.ts || Date.now(),
+      );
+
+    const upShares = win.up_shares + (fill.side === "UP" ? fill.shares : 0);
+    const upCost = win.up_cost_usd + (fill.side === "UP" ? fill.costUsd : 0);
+    const downShares =
+      win.down_shares + (fill.side === "DOWN" ? fill.shares : 0);
+    const downCost =
+      win.down_cost_usd + (fill.side === "DOWN" ? fill.costUsd : 0);
+    const matched = Math.min(upShares, downShares);
+
+    this.db
+      .prepare(
+        `
+      UPDATE pm_windows
+      SET up_shares = ?, up_cost_usd = ?, down_shares = ?, down_cost_usd = ?, matched_shares = ?
+      WHERE slug = ?
+    `,
+      )
+      .run(upShares, upCost, downShares, downCost, matched, fill.windowSlug);
+
+    return this.getPmWindow(fill.windowSlug);
+  }
+
+  settlePmWindow(slug, winner) {
+    const win = this.getPmWindow(slug);
+    if (!win || win.status === "SETTLED") return win;
+    const payout = winner === "UP" ? win.up_shares : win.down_shares;
+    const totalCost = win.up_cost_usd + win.down_cost_usd;
+    const pnl = payout - totalCost;
+    const now = Date.now();
+    this.db
+      .prepare(
+        `
+      UPDATE pm_windows
+      SET status = 'SETTLED', winner = ?, payout_usd = ?, realized_pnl_usd = ?, settled_at = ?
+      WHERE slug = ?
+    `,
+      )
+      .run(
+        winner,
+        Number(payout.toFixed(4)),
+        Number(pnl.toFixed(4)),
+        now,
+        slug,
+      );
+    return this.getPmWindow(slug);
+  }
+
+  listPmTrades(limit = 60) {
+    return this.db
+      .prepare("SELECT * FROM pm_trades ORDER BY ts DESC LIMIT ?")
+      .all(limit);
+  }
+
+  pmStats() {
+    const agg = this.db
+      .prepare(
+        `
+      SELECT
+        COUNT(*) AS windows,
+        SUM(CASE WHEN status = 'SETTLED' THEN 1 ELSE 0 END) AS settled,
+        SUM(CASE WHEN status = 'SETTLED' AND realized_pnl_usd > 0 THEN 1 ELSE 0 END) AS wins,
+        SUM(CASE WHEN status = 'SETTLED' AND (up_shares > 0 OR down_shares > 0) THEN 1 ELSE 0 END) AS traded_settled,
+        COALESCE(SUM(realized_pnl_usd), 0) AS realized_pnl,
+        COALESCE(SUM(up_shares + down_shares), 0) AS total_shares,
+        COALESCE(SUM(matched_shares * 2), 0) AS matched_total_shares,
+        COALESCE(SUM(up_cost_usd + down_cost_usd), 0) AS total_volume
+      FROM pm_windows
+    `,
+      )
+      .get();
+    const tradesCount = this.db
+      .prepare("SELECT COUNT(*) AS c FROM pm_trades")
+      .get().c;
+    const matchedPct =
+      agg.total_shares > 0
+        ? (agg.matched_total_shares / agg.total_shares) * 100
+        : 0;
+    const winRatePct =
+      agg.traded_settled > 0 ? (agg.wins / agg.traded_settled) * 100 : 0;
+    return {
+      windows: agg.windows || 0,
+      settled: agg.settled || 0,
+      tradedSettled: agg.traded_settled || 0,
+      wins: agg.wins || 0,
+      winRatePct: Number(winRatePct.toFixed(1)),
+      matchedPct: Number(matchedPct.toFixed(2)),
+      realizedPnlUsd: Number((agg.realized_pnl || 0).toFixed(2)),
+      totalVolumeUsd: Number((agg.total_volume || 0).toFixed(2)),
+      tradesCount,
+    };
+  }
+
+  resetPmData() {
+    this.db.exec("DELETE FROM pm_trades; DELETE FROM pm_windows;");
   }
 
   stats() {

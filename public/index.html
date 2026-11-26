@@ -13,9 +13,14 @@
       <div class="brand">
         <span class="pulse-dot" id="radarDot"></span>
         <span class="logo">APEXORB</span>
-        <span class="sub"
-          >SOLANA ON-CHAIN FORENSICS &times; QUANT MICROSTRUCTURE</span
-        >
+        <div class="mode-switch">
+          <button type="button" class="mode-btn active" data-mode="solana">
+            SOLANA ORB
+          </button>
+          <button type="button" class="mode-btn" data-mode="polymarket">
+            POLYMARKET 5M BOT
+          </button>
+        </div>
       </div>
       <div class="stats-strip">
         <div class="stat-pill">
@@ -45,7 +50,7 @@
       </form>
     </header>
 
-    <main class="grid">
+    <main class="grid" id="solanaView">
       <!-- LEFT COLUMN: LIVE RADAR & SIX CHECKS -->
       <section class="col col-left">
         <div class="panel">
@@ -193,7 +198,7 @@
     </main>
 
     <!-- BOTTOM WORKSPACE: TABS FOR SCANS, OPERATOR MEMORY & PAPER TRADES -->
-    <section class="bottom-deck panel">
+    <section class="bottom-deck panel" id="solanaDeck">
       <div class="tabs-bar">
         <button class="tab active" data-tab="scans">RECENT SCANS</button>
         <button class="tab" data-tab="memory">OPERATOR MEMORY (SQLite)</button>
@@ -203,6 +208,91 @@
         </button>
       </div>
       <div class="tab-body" id="tabBody"></div>
+    </section>
+
+    <!-- POLYMARKET 5M BOT VIEW (TRACK B) -->
+    <section id="pmView" class="pm-view hidden">
+      <div class="pm-toolbar panel">
+        <div class="pm-kpis">
+          <div class="pm-kpi">
+            <span class="k">PM PAPER PNL</span
+            ><strong id="pmPnl" class="v">$0.00</strong>
+          </div>
+          <div class="pm-kpi">
+            <span class="k">MATCHED %</span
+            ><strong id="pmMatched" class="v">0.0%</strong>
+          </div>
+          <div class="pm-kpi">
+            <span class="k">WIN RATE</span
+            ><strong id="pmWinRate" class="v">0.0%</strong>
+          </div>
+          <div class="pm-kpi">
+            <span class="k">WINDOWS (SETTLED)</span
+            ><strong id="pmWindows" class="v">0</strong>
+          </div>
+          <div class="pm-kpi">
+            <span class="k">FILLS</span
+            ><strong id="pmFills" class="v">0</strong>
+          </div>
+          <div class="pm-kpi">
+            <span class="k">VOLUME</span
+            ><strong id="pmVol" class="v">$0.00</strong>
+          </div>
+          <div class="pm-kpi">
+            <span class="k">BINANCE WS</span
+            ><strong id="pmBinance" class="v">—</strong>
+          </div>
+        </div>
+        <div class="pm-actions">
+          <button type="button" id="pmToggleBtn" class="pm-btn active">
+            AUTO PAPER: ON
+          </button>
+          <button type="button" id="pmResetBtn" class="pm-btn danger">
+            RESET PAPER
+          </button>
+        </div>
+      </div>
+
+      <div class="pm-cards" id="pmCards"></div>
+
+      <div class="pm-charts">
+        <div class="panel">
+          <div class="panel-hd">
+            <span
+              >KALMAN FAIR-P vs CLOB ASK OSCILLATOR (<strong id="pmSelAsset"
+                >BTC</strong
+              >
+              5M)</span
+            >
+            <span class="badge" id="pmEdgeBadge">—</span>
+          </div>
+          <canvas id="pmOscCanvas" height="220"></canvas>
+        </div>
+        <div class="panel">
+          <div class="panel-hd">
+            <span>INVENTORY &amp; MATCHED HEDGE BALANCE</span>
+            <span class="badge" id="pmImbalBadge">IMBAL 0%</span>
+          </div>
+          <canvas id="pmInvCanvas" height="220"></canvas>
+        </div>
+      </div>
+
+      <div class="pm-bottom">
+        <div class="panel">
+          <div class="panel-hd">
+            <span>LIVE PAPER FILLS &amp; DECISION TRACE (FLIP LOG)</span>
+            <span class="badge good">NEVER SELL · MATCH &amp; EDGE</span>
+          </div>
+          <div id="pmTradesBox" class="pm-scroll"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-hd">
+            <span>5M WINDOWS &amp; SETTLED PNL (CHAINLINK TWAP)</span>
+            <span class="badge" id="pmSettledBadge">AUTO SETTLE</span>
+          </div>
+          <div id="pmWindowsBox" class="pm-scroll"></div>
+        </div>
+      </div>
     </section>
 
     <script src="/app.js"></script>
