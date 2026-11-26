@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>
+      APEXORB // Solana On-Chain Forensics &amp; Quant Alpha Terminal
+    </title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="pulse-dot" id="radarDot"></span>
+        <span class="logo">APEXORB</span>
+        <span class="sub"
+          >SOLANA ON-CHAIN FORENSICS &times; QUANT MICROSTRUCTURE</span
+        >
+      </div>
+      <div class="stats-strip">
+        <div class="stat-pill">
+          <span class="k">RADAR</span><span class="v" id="statLaunches">0</span>
+        </div>
+        <div class="stat-pill">
+          <span class="k">SCANS</span><span class="v" id="statScans">0</span>
+        </div>
+        <div class="stat-pill">
+          <span class="k">OP MEMORY</span
+          ><span class="v" id="statMemory">0</span>
+        </div>
+        <div class="stat-pill">
+          <span class="k">PAPER PNL</span
+          ><span class="v" id="statPnl">$0.00</span>
+        </div>
+      </div>
+      <form class="scan-form" id="scanForm">
+        <input
+          id="mintInput"
+          type="text"
+          placeholder="Вставьте Solana Mint Address (pump.fun / SPL / Token-2022)..."
+          spellcheck="false"
+          autocomplete="off"
+        />
+        <button type="submit" id="scanBtn">SCAN TOKEN</button>
+      </form>
+    </header>
+
+    <main class="grid">
+      <!-- LEFT COLUMN: LIVE RADAR & SIX CHECKS -->
+      <section class="col col-left">
+        <div class="panel">
+          <div class="panel-hd">
+            <span>LIVE PUMP.FUN RADAR</span>
+            <span class="badge" id="radarStatus">CONNECTING</span>
+          </div>
+          <div class="radar-list" id="radarList">
+            <div class="empty">
+              Ожидание новых запусков с PumpPortal WebSocket...
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-hd">
+            <span>SIX CHECKS &amp; GUARD</span>
+            <span class="badge" id="guardBadge">IDLE</span>
+          </div>
+          <div id="checksBox" class="checks-box">
+            <div class="empty">
+              Запустите скан токена или выберите запуск из радара
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- CENTER COLUMN: 3D SPHERE GRAPH + MATRIX + LIFE OF A SCAN -->
+      <section class="col col-center">
+        <div class="panel panel-sphere">
+          <div class="panel-hd">
+            <span
+              >OPERATOR &amp; FUNDING-ROOT SPHERE
+              <small class="muted">(drag to rotate · click node)</small></span
+            >
+            <span class="badge" id="sphereMeta">0 NODES</span>
+          </div>
+          <div class="sphere-wrap">
+            <canvas id="sphereCanvas"></canvas>
+            <div class="sphere-legend">
+              <span class="leg"><i class="dot c-clean"></i>Clean Holder</span>
+              <span class="leg"><i class="dot c-fresh"></i>Fresh / Pack</span>
+              <span class="leg"><i class="dot c-op"></i>Linked Cluster</span>
+              <span class="leg"
+                ><i class="dot c-root"></i>Funding Root / Dev</span
+              >
+            </div>
+            <div class="node-inspector hidden" id="nodeInspector"></div>
+          </div>
+        </div>
+
+        <div class="center-split">
+          <div class="panel">
+            <div class="panel-hd">
+              <span>SAFETY &times; ALPHA MATRIX</span>
+              <span class="badge" id="matrixBadge">—</span>
+            </div>
+            <canvas id="matrixCanvas" height="190"></canvas>
+          </div>
+          <div class="panel">
+            <div class="panel-hd">
+              <span>LIFE OF A SCAN</span>
+              <span class="badge" id="rpcBadge">0 RPC</span>
+            </div>
+            <div class="trace-log" id="traceLog">
+              <div class="trace-line muted">
+                [READY] Введите mint адрес для полного ончейн-аудита.
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- RIGHT COLUMN: DUAL-AXIS VERDICT + EXIT SIMULATOR + OPERATORS -->
+      <section class="col col-right">
+        <div class="panel verdict-panel">
+          <div class="panel-hd">
+            <span id="tokenHeader">NO TOKEN SELECTED</span>
+            <span class="badge" id="actionBadge">IDLE</span>
+          </div>
+          <div class="dual-scores">
+            <div class="score-card">
+              <div class="sc-lbl">SAFETY SCORE</div>
+              <div class="sc-val" id="safetyScore">—</div>
+              <div class="sc-sub" id="safetyBand">ANTI-RUG</div>
+            </div>
+            <div class="score-card">
+              <div class="sc-lbl">ALPHA VELOCITY</div>
+              <div class="sc-val" id="alphaScore">—</div>
+              <div class="sc-sub" id="alphaSub">MICROSTRUCTURE</div>
+            </div>
+          </div>
+          <div id="marketStrip" class="market-strip"></div>
+          <div id="gatesBox" class="gates-box"></div>
+          <div class="paper-actions">
+            <button type="button" id="paperOpenBtn" disabled>
+              PAPER LONG $250
+            </button>
+            <a
+              id="dexLink"
+              class="ext-btn hidden"
+              target="_blank"
+              rel="noopener"
+              >DEXSCREENER &nearr;</a
+            >
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-hd">
+            <span>EXIT SIMULATOR &amp; WASH GATE</span>
+            <span class="badge" id="washBadge">—</span>
+          </div>
+          <div class="sim-controls">
+            <label>Ваша позиция: <strong id="simUsdLbl">$1,000</strong></label>
+            <input
+              id="simSlider"
+              type="range"
+              min="100"
+              max="10000"
+              step="100"
+              value="1000"
+            />
+            <div class="sim-metrics" id="simMetrics"></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-hd">
+            <span>OPERATORS &amp; TOP HOLDERS</span>
+            <span class="badge" id="opCountBadge">0</span>
+          </div>
+          <div class="holders-list" id="holdersList"></div>
+        </div>
+      </section>
+    </main>
+
+    <!-- BOTTOM WORKSPACE: TABS FOR SCANS, OPERATOR MEMORY & PAPER TRADES -->
+    <section class="bottom-deck panel">
+      <div class="tabs-bar">
+        <button class="tab active" data-tab="scans">RECENT SCANS</button>
+        <button class="tab" data-tab="memory">OPERATOR MEMORY (SQLite)</button>
+        <button class="tab" data-tab="paper">PAPER TRADING LAB</button>
+        <button class="refresh-btn" id="refreshPaperBtn">
+          REFRESH PAPER PNL
+        </button>
+      </div>
+      <div class="tab-body" id="tabBody"></div>
+    </section>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

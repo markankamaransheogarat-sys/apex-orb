@@ -1,0 +1,14 @@
+{
+  "name": "apex-orb",
+  "version": "1.0.0",
+  "description": "Full-stack Solana memecoin on-chain forensics, wallet-cluster graph, orderflow microstructure & alpha scanner",
+  "main": "src/server.js",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/*.test.js"
+  }
+}
