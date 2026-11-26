@@ -50,13 +50,22 @@
       <section class="col col-left">
         <div class="panel">
           <div class="panel-hd">
-            <span>LIVE PUMP.FUN RADAR</span>
+            <div class="feed-switch">
+              <button
+                type="button"
+                class="feed-btn active"
+                data-feed="trending"
+              >
+                HOT ACTIVE
+              </button>
+              <button type="button" class="feed-btn" data-feed="launches">
+                LIVE RADAR
+              </button>
+            </div>
             <span class="badge" id="radarStatus">CONNECTING</span>
           </div>
           <div class="radar-list" id="radarList">
-            <div class="empty">
-              Ожидание новых запусков с PumpPortal WebSocket...
-            </div>
+            <div class="empty">Загрузка активных токенов Solana...</div>
           </div>
         </div>
 

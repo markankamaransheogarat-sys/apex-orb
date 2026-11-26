@@ -237,6 +237,38 @@ function scoreSafety(holders, operators, ctx) {
       headline: "Holders could not be read from Solana RPC",
     };
   }
+  if (holders.length < LIMITS.minHolders) {
+    return {
+      score: null,
+      band: "EARLY",
+      state: "too_early",
+      parts: {
+        operator: 0,
+        virgin: 0,
+        transfer: 0,
+        sniper: 0,
+        concentration: 0,
+      },
+      metrics: {
+        impact: 0,
+        operatorShare: holders[0] ? holders[0].share : 0,
+        virgin: 0,
+        transfer: 0,
+        sniper: 0,
+        concentration: sum(holders, (h) => h.share),
+        unread: 0,
+      },
+      gates: [
+        {
+          hard: false,
+          note: true,
+          text: `TOO EARLY: only ${holders.length} holders outside pools (min ${LIMITS.minHolders} required)`,
+        },
+      ],
+      scenario: null,
+      headline: `Too early · only ${holders.length} holder(s) outside curve/pools`,
+    };
+  }
   const F = ctx.floatTokens || 1;
   const R = ctx.reserveTokens || 0;
   const unread = ctx.unread || 0;
@@ -538,7 +570,10 @@ function scoreAlphaAndMicrostructure({
   const alphaHigh = total >= 62;
   let quadrant = "TOXIC_AVOID";
   let action = "SKIP";
-  if (safety && safety.score == null) {
+  if (safety && safety.band === "EARLY") {
+    quadrant = "TOO_EARLY";
+    action = "WAIT_TRACTION";
+  } else if (safety && safety.score == null) {
     quadrant = "UNAVAILABLE";
     action = "RETRY_RPC";
   } else if (safeHigh && alphaHigh) {

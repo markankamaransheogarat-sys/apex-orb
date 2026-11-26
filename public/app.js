@@ -3,6 +3,7 @@
 const state = {
   currentScan: null,
   activeTab: "scans",
+  radarFeed: "trending",
   sphere: {
     rotY: 0.4,
     rotX: 0.25,
@@ -10,8 +11,10 @@ const state = {
     lastX: 0,
     lastY: 0,
     projected: [],
+    pulse: 0,
   },
   radarLaunches: [],
+  trendingTokens: [],
 };
 
 const $ = (id) => document.getElementById(id);
@@ -59,6 +62,31 @@ function appendTrace(msg, level = "info") {
 
 function renderRadar() {
   const box = $("radarList");
+  if (state.radarFeed === "trending") {
+    if (!state.trendingTokens.length) {
+      box.innerHTML =
+        '<div class="empty">Загрузка активных токенов DexScreener...</div>';
+      return;
+    }
+    box.innerHTML = state.trendingTokens
+      .map(
+        (t) => `
+      <div class="radar-item" data-mint="${esc(t.mint)}">
+        <div>
+          <div class="sym">${shortAddr(t.mint)} <span class="badge good">ACTIVE</span></div>
+          <div class="meta">${esc(t.description || "Trending Solana pool")}</div>
+        </div>
+        <button class="btn-mini" type="button">SCAN</button>
+      </div>
+    `,
+      )
+      .join("");
+    box.querySelectorAll(".radar-item").forEach((el) => {
+      el.addEventListener("click", () => runScan(el.dataset.mint));
+    });
+    return;
+  }
+
   if (!state.radarLaunches.length) {
     box.innerHTML =
       '<div class="empty">Ожидание новых запусков с PumpPortal WebSocket...</div>';
@@ -326,20 +354,72 @@ function renderSphereFrame() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
 
-  if (!state.sphere.dragging) state.sphere.rotY += 0.003;
+  if (!state.sphere.dragging) state.sphere.rotY += 0.0028;
+  state.sphere.pulse = (state.sphere.pulse + 0.025) % (Math.PI * 2);
 
   const cx = w / 2;
   const cy = h / 2;
-  const radius = Math.min(w, h) * 0.36;
+  const radius = Math.min(w, h) * 0.37;
 
-  // Ambient wireframe rings
-  ctx.strokeStyle = "rgba(34, 211, 238, 0.08)";
+  const cosY = Math.cos(state.sphere.rotY),
+    sinY = Math.sin(state.sphere.rotY);
+  const cosX = Math.cos(state.sphere.rotX),
+    sinX = Math.sin(state.sphere.rotX);
+
+  const project = (x0, y0, z0) => {
+    const x1 = x0 * cosY - z0 * sinY;
+    const z1 = x0 * sinY + z0 * cosY;
+    const y2 = y0 * cosX - z1 * sinX;
+    const z2 = y0 * sinX + z1 * cosX;
+    const scale = 340 / (340 + z2);
+    return { sx: cx + x1 * scale, sy: cy + y2 * scale, z: z2, scale };
+  };
+
+  // Core radial glow
+  const coreGlow = ctx.createRadialGradient(cx, cy, 4, cx, cy, radius * 1.15);
+  coreGlow.addColorStop(0, "rgba(34, 211, 238, 0.16)");
+  coreGlow.addColorStop(0.45, "rgba(245, 158, 11, 0.05)");
+  coreGlow.addColorStop(1, "rgba(5, 8, 12, 0)");
+  ctx.fillStyle = coreGlow;
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius * 1.15, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Starburst 3D neural filaments (140 background Fibonacci rays)
+  const RAY_COUNT = 140;
+  for (let i = 0; i < RAY_COUNT; i++) {
+    const phi = Math.acos(1 - (2 * (i + 0.5)) / RAY_COUNT);
+    const theta = Math.PI * (1 + Math.sqrt(5)) * i;
+    const rOut = radius * (0.86 + ((i * 37) % 15) * 0.014);
+    const x0 = rOut * Math.sin(phi) * Math.cos(theta);
+    const y0 = rOut * Math.sin(phi) * Math.sin(theta);
+    const z0 = rOut * Math.cos(phi);
+    const pt = project(x0, y0, z0);
+    const isWarm = x0 < 0;
+    const alpha = pt.z > 0 ? 0.09 : 0.24;
+    ctx.strokeStyle = isWarm
+      ? `rgba(251, 191, 36, ${alpha})`
+      : `rgba(148, 163, 184, ${alpha * 0.85})`;
+    ctx.lineWidth = 0.7;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(pt.sx, pt.sy);
+    ctx.stroke();
+
+    ctx.fillStyle = isWarm
+      ? `rgba(251, 191, 36, ${alpha * 1.7})`
+      : `rgba(203, 213, 225, ${alpha * 1.5})`;
+    ctx.fillRect(pt.sx - 0.8, pt.sy - 0.8, 1.6, 1.6);
+  }
+
+  // Outer orbital scan rings
+  ctx.strokeStyle = "rgba(34, 211, 238, 0.14)";
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.arc(cx, cy, radius * 1.04, 0, Math.PI * 2);
   ctx.stroke();
   ctx.beginPath();
-  ctx.ellipse(cx, cy, radius, radius * 0.35, 0, 0, Math.PI * 2);
+  ctx.ellipse(cx, cy, radius * 1.04, radius * 0.34, 0.15, 0, Math.PI * 2);
   ctx.stroke();
 
   const nodes =
@@ -359,63 +439,50 @@ function renderSphereFrame() {
     return;
   }
 
-  const cosY = Math.cos(state.sphere.rotY),
-    sinY = Math.sin(state.sphere.rotY);
-  const cosX = Math.cos(state.sphere.rotX),
-    sinX = Math.sin(state.sphere.rotX);
-
   const posMap = new Map();
   const projected = [];
 
   nodes.forEach((node, idx) => {
-    // Fibonacci sphere distribution
     const phi = Math.acos(1 - (2 * (idx + 0.5)) / nodes.length);
     const theta = Math.PI * (1 + Math.sqrt(5)) * idx;
-    const r = node.isRoot ? radius * 0.55 : radius;
+    const r = node.isRoot ? radius * 0.42 : radius * 0.96;
     const x0 = r * Math.sin(phi) * Math.cos(theta);
     const y0 = r * Math.sin(phi) * Math.sin(theta);
     const z0 = r * Math.cos(phi);
-
-    const x1 = x0 * cosY - z0 * sinY;
-    const z1 = x0 * sinY + z0 * cosY;
-    const y2 = y0 * cosX - z1 * sinX;
-    const z2 = y0 * sinX + z1 * cosX;
-
-    const scale = 320 / (320 + z2);
-    const sx = cx + x1 * scale;
-    const sy = cy + y2 * scale;
-    const pt = { node, sx, sy, z: z2, scale };
+    const pt = { node, ...project(x0, y0, z0) };
     posMap.set(node.id, pt);
     projected.push(pt);
   });
 
-  // Draw links
+  // Draw curved cluster arcs
   for (const e of edges) {
     const a = posMap.get(e.source);
     const b = posMap.get(e.target);
     if (!a || !b) continue;
+    const midX = (a.sx + b.sx) / 2 + (cy - (a.sy + b.sy) / 2) * 0.14;
+    const midY = (a.sy + b.sy) / 2 + ((a.sx + b.sx) / 2 - cx) * 0.14;
     ctx.beginPath();
     ctx.moveTo(a.sx, a.sy);
-    ctx.lineTo(b.sx, b.sy);
+    ctx.quadraticCurveTo(midX, midY, b.sx, b.sy);
     ctx.strokeStyle =
       e.kind === "funded_by"
-        ? "rgba(239, 68, 68, 0.55)"
+        ? "rgba(239, 68, 68, 0.72)"
         : e.level === "pack"
-          ? "rgba(245, 158, 11, 0.45)"
-          : "rgba(217, 70, 239, 0.65)";
-    ctx.lineWidth = e.level === "proven" ? 1.5 : 1;
+          ? "rgba(245, 158, 11, 0.65)"
+          : "rgba(217, 70, 239, 0.8)";
+    ctx.lineWidth = e.level === "proven" ? 1.8 : 1.1;
     ctx.stroke();
   }
 
-  // Draw nodes back-to-front
+  // Draw holder & root nodules back-to-front with halos
   projected.sort((a, b) => b.z - a.z);
   state.sphere.projected = projected;
 
   for (const pt of projected) {
     const n = pt.node;
     const baseR = n.isRoot
-      ? 6
-      : Math.max(3.5, Math.min(13, 3.5 + (n.share || 0) * 65));
+      ? 7
+      : Math.max(4, Math.min(14, 4 + (n.share || 0) * 55));
     const r = baseR * pt.scale;
     const color =
       n.isRoot || n.dev
@@ -426,16 +493,41 @@ function renderSphereFrame() {
             ? "#f59e0b"
             : "#10b981";
 
+    // Luminous ray from core to major holders
+    if (!n.isRoot) {
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(pt.sx, pt.sy);
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = pt.z > 0 ? 0.14 : 0.35;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // Outer halo
+    ctx.beginPath();
+    ctx.arc(pt.sx, pt.sy, r * 1.8, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.globalAlpha = pt.z > 0 ? 0.12 : 0.22;
+    ctx.fill();
+
+    // Solid nodule
     ctx.beginPath();
     ctx.arc(pt.sx, pt.sy, r, 0, Math.PI * 2);
     ctx.fillStyle = color;
-    ctx.globalAlpha = pt.z > 0 ? 0.55 : 0.95;
+    ctx.globalAlpha = pt.z > 0 ? 0.65 : 0.98;
     ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = "#ffffff";
+    ctx.globalAlpha = pt.z > 0 ? 0.25 : 0.65;
+    ctx.stroke();
+
     ctx.globalAlpha = 1;
-    if (n.isRoot || n.share > 0.04) {
-      ctx.fillStyle = "#dce6f2";
+    if (n.isRoot || n.share > 0.03 || nodes.length <= 15) {
+      ctx.fillStyle = "#e2e8f0";
       ctx.font = "9px monospace";
-      ctx.fillText(n.label, pt.sx + r + 3, pt.sy + 3);
+      const pctTxt = n.isRoot ? "" : ` ${(n.share * 100).toFixed(1)}%`;
+      ctx.fillText(`${n.label}${pctTxt}`, pt.sx + r + 4, pt.sy + 3);
     }
   }
 
@@ -674,13 +766,23 @@ function initEvents() {
     insp.classList.remove("hidden");
   });
 
+  document.querySelectorAll(".feed-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.radarFeed = btn.dataset.feed;
+      document
+        .querySelectorAll(".feed-btn")
+        .forEach((b) => b.classList.toggle("active", b === btn));
+      renderRadar();
+    });
+  });
+
   // SSE stream
   const es = new EventSource("/api/stream");
   es.addEventListener("launch", (ev) => {
     const launch = JSON.parse(ev.data);
     state.radarLaunches.unshift(launch);
     state.radarLaunches = state.radarLaunches.slice(0, 60);
-    renderRadar();
+    if (state.radarFeed === "launches") renderRadar();
     loadHealth();
   });
   es.addEventListener("scan_trace", (ev) => {
@@ -696,13 +798,36 @@ async function bootstrap() {
   drawMatrix(null);
   requestAnimationFrame(renderSphereFrame);
 
-  const [radarRes] = await Promise.all([
+  const [radarRes, trendingRes, scansRes] = await Promise.all([
     api("/api/radar?limit=40"),
+    api("/api/trending").catch(() => ({ tokens: [] })),
+    api("/api/scans?limit=15").catch(() => ({ scans: [] })),
     loadHealth(),
     loadTabData(),
   ]);
   state.radarLaunches = radarRes.launches || [];
+  state.trendingTokens = trendingRes.tokens || [];
   renderRadar();
+
+  const preferred =
+    (scansRes.scans || []).find((s) => s.safety_score != null) ||
+    (scansRes.scans || [])[0];
+  if (preferred) {
+    try {
+      const full = await api(`/api/scans/${preferred.mint}`);
+      state.currentScan = full;
+      renderChecks(full);
+      renderVerdict(full);
+      renderHolders(full);
+      drawMatrix(full);
+      $("traceLog").innerHTML = (full.trace || [])
+        .map(
+          (t) =>
+            `<div class="trace-line ${esc(t.level || "info")}">[+${t.t}ms] ${esc(t.msg)}</div>`,
+        )
+        .join("");
+    } catch {}
+  }
 }
 
 bootstrap();

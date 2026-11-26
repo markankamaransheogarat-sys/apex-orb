@@ -128,6 +128,37 @@ function createApp(opts = {}) {
         });
       }
 
+      if (req.method === "GET" && pathname === "/api/trending") {
+        const list = await rpc.cache.wrap(
+          "dex_trending_sol",
+          async () => {
+            try {
+              const r = await fetch(
+                "https://api.dexscreener.com/token-boosts/top/v1",
+                {
+                  headers: { "User-Agent": "ApexOrb-Quant-Scanner/1.0" },
+                },
+              );
+              if (!r.ok) return [];
+              const arr = await r.json();
+              return (Array.isArray(arr) ? arr : [])
+                .filter((x) => x.chainId === "solana" && x.tokenAddress)
+                .slice(0, 20)
+                .map((x) => ({
+                  mint: x.tokenAddress,
+                  description: (x.description || "").slice(0, 48),
+                  amount: x.totalAmount || 0,
+                  url: x.url || null,
+                }));
+            } catch {
+              return [];
+            }
+          },
+          60_000,
+        );
+        return sendJson(res, 200, { tokens: list });
+      }
+
       if (req.method === "GET" && pathname === "/api/scans") {
         const limit = Math.min(
           50,
@@ -240,7 +271,7 @@ function createApp(opts = {}) {
       }
 
       // Static files from public/
-      if (req.method === "GET") {
+      if (req.method === "GET" || req.method === "HEAD") {
         const rel =
           pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
         const fullPath = path.resolve(PUBLIC_DIR, rel);
@@ -255,6 +286,7 @@ function createApp(opts = {}) {
           res.writeHead(200, {
             "Content-Type": MIME[ext] || "application/octet-stream",
           });
+          if (req.method === "HEAD") return res.end();
           return fs.createReadStream(fullPath).pipe(res);
         }
       }

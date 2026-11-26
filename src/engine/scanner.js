@@ -222,10 +222,9 @@ async function scanToken(mint, { rpc, db, onTrace } = {}) {
         const rcHolders = rc.topHolders || [];
         for (const h of rcHolders) {
           const uiAmount =
-            Number(h.uiAmountString || h.uiAmount || 0) ||
-            (h.amount && h.decimals != null
-              ? h.amount / Math.pow(10, h.decimals)
-              : 0);
+            h.amount != null && mintInfo.decimals != null
+              ? Number(h.amount) / Math.pow(10, mintInfo.decimals)
+              : Number(h.uiAmountString || h.uiAmount || 0);
           const owner = h.owner;
           if (!owner || uiAmount <= 0) continue;
           if (

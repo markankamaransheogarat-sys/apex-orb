@@ -127,9 +127,21 @@ test("evaluateShield and evaluateGuard detect serial creators and heavy dev buys
   assert.match(g.reason, /slot-0/i);
 });
 
-test("scoreSafety never gives a silent pass when holders list is empty", () => {
+test("scoreSafety never gives a silent pass when holders list is empty or too early", () => {
   const unavailable = scoreSafety([], [], { floatTokens: 1, reserveTokens: 0 });
   assert.equal(unavailable.score, null);
   assert.equal(unavailable.band, "UNAVAILABLE");
   assert.equal(unavailable.state, "unavailable");
+
+  const early = scoreSafety(
+    [
+      { i: 0, share: 0.2 },
+      { i: 1, share: 0.1 },
+    ],
+    [{ id: null, wallets: [0], share: 0.2, weighted: 0.2 }],
+    { floatTokens: 1000, reserveTokens: 500 },
+  );
+  assert.equal(early.score, null);
+  assert.equal(early.band, "EARLY");
+  assert.equal(early.state, "too_early");
 });
