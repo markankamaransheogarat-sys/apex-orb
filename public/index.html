@@ -201,9 +201,21 @@
     <section class="bottom-deck panel" id="solanaDeck">
       <div class="tabs-bar">
         <button class="tab active" data-tab="scans">RECENT SCANS</button>
+        <button class="tab" data-tab="whales">ALPHA WHALES</button>
         <button class="tab" data-tab="memory">OPERATOR MEMORY (SQLite)</button>
         <button class="tab" data-tab="paper">PAPER TRADING LAB</button>
-        <button class="refresh-btn" id="refreshPaperBtn">
+        <button
+          class="refresh-btn"
+          id="discoverWhalesBtn"
+          style="margin-left: auto"
+        >
+          DISCOVER WHALES
+        </button>
+        <button
+          class="refresh-btn"
+          id="refreshPaperBtn"
+          style="margin-left: 6px"
+        >
           REFRESH PAPER PNL
         </button>
       </div>
@@ -227,16 +239,20 @@
             ><strong id="pmWinRate" class="v">0.0%</strong>
           </div>
           <div class="pm-kpi">
+            <span class="k">PROFIT FACTOR</span
+            ><strong id="pmPf" class="v">0.00</strong>
+          </div>
+          <div class="pm-kpi">
+            <span class="k">T-STAT / DD</span
+            ><strong id="pmTstat" class="v">0.00 / $0</strong>
+          </div>
+          <div class="pm-kpi">
             <span class="k">WINDOWS (SETTLED)</span
             ><strong id="pmWindows" class="v">0</strong>
           </div>
           <div class="pm-kpi">
-            <span class="k">FILLS</span
-            ><strong id="pmFills" class="v">0</strong>
-          </div>
-          <div class="pm-kpi">
-            <span class="k">VOLUME</span
-            ><strong id="pmVol" class="v">$0.00</strong>
+            <span class="k">GATE</span
+            ><strong id="pmGate" class="v">PAPER ONLY</strong>
           </div>
           <div class="pm-kpi">
             <span class="k">BINANCE WS</span
@@ -244,6 +260,9 @@
           </div>
         </div>
         <div class="pm-actions">
+          <button type="button" id="pmModeBtn" class="pm-btn active">
+            MODE: MAKER ARB (0% FEE)
+          </button>
           <button type="button" id="pmToggleBtn" class="pm-btn active">
             AUTO PAPER: ON
           </button>

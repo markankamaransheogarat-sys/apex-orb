@@ -440,16 +440,32 @@ async function scanToken(mint, { rpc, db, onTrace } = {}) {
     `Clustered into ${operators.length} operators (${multiOps.length} multi-wallet groups, ${links.length} proven/pack links)`,
   );
 
-  // Step 6: Cross-token Operator & Creator Memory check
+  // Step 6: Cross-token Operator & Creator Memory + ALPHA_WHALES check
   const allRoots = [...new Set(operators.flatMap((o) => o.fundingRoots || []))];
   const memRoots = db ? db.getOperatorMemory(allRoots) : [];
   const recidivistRoots = memRoots.filter((r) => r.danger_tokens >= 1);
   const creatorMem = db && creator ? db.getCreatorMemory(creator) : null;
+  const whaleHits = db
+    ? db.getAlphaWhales([...sortedHolders.map((h) => h.owner), ...allRoots])
+    : [];
+  const whaleMap = new Map(whaleHits.map((w) => [w.wallet, w]));
+  for (const h of sortedHolders) {
+    const wm = whaleMap.get(h.owner);
+    if (wm) {
+      h.whale = true;
+      h.whaleWins = wm.win_tokens;
+    }
+  }
 
   if (recidivistRoots.length) {
     logStep(
       `ALERT: Operator Memory hit on ${recidivistRoots.length} funding root(s)!`,
       "danger",
+    );
+  }
+  if (whaleHits.length) {
+    logStep(
+      `ALPHA_WHALES match: ${whaleHits.length} known winning wallet(s) inside top holders!`,
     );
   }
 
@@ -499,7 +515,29 @@ async function scanToken(mint, { rpc, db, onTrace } = {}) {
     holders: sortedHolders,
     operators,
     safety,
+    whaleHits,
   });
+
+  // Auto-credit top organic holders of verified healthy tokens into ALPHA_WHALES
+  if (
+    db &&
+    safety.score != null &&
+    safety.score >= 65 &&
+    (market.liquidityUsd || 0) >= 15_000 &&
+    (market.mcap || 0) >= 40_000
+  ) {
+    for (const h of sortedHolders.slice(0, 8)) {
+      if (!h.dev && h.kind === "buy" && h.share <= 0.12) {
+        db.creditAlphaWhale({
+          wallet: h.owner,
+          role: "WHALE",
+          symbol,
+          mint,
+          isWin: true,
+        });
+      }
+    }
+  }
 
   logStep(
     `Verdict: SAFETY ${safety.score}/100 (${safety.band}) · ALPHA ${alpha.score}/100 · Quadrant ${alpha.matrix.quadrant} (${budget.used} RPC calls, ${Date.now() - startedAt}ms)`,
@@ -516,6 +554,7 @@ async function scanToken(mint, { rpc, db, onTrace } = {}) {
     virgin: h.virgin,
     sniper: h.sniper,
     dev: h.dev,
+    whale: Boolean(h.whale),
     unread: h.unread,
     fundingRoot: h.fundingRoot,
   }));
@@ -579,6 +618,7 @@ async function scanToken(mint, { rpc, db, onTrace } = {}) {
     memoryHits: {
       creator: creatorMem,
       operatorRoots: memRoots,
+      alphaWhales: whaleHits,
     },
     graph: {
       nodes: graphNodes,

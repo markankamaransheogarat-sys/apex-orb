@@ -136,6 +136,16 @@ class ApexDb {
         ts INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_pm_trades_ts ON pm_trades(ts DESC);
+
+      CREATE TABLE IF NOT EXISTS alpha_whales (
+        wallet TEXT PRIMARY KEY,
+        role TEXT NOT NULL DEFAULT 'WHALE',
+        win_tokens INTEGER NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0,
+        best_symbol TEXT,
+        best_mint TEXT,
+        last_seen INTEGER NOT NULL
+      );
     `);
   }
 
@@ -542,6 +552,41 @@ class ApexDb {
         : 0;
     const winRatePct =
       agg.traded_settled > 0 ? (agg.wins / agg.traded_settled) * 100 : 0;
+
+    const settledPnls = this.db
+      .prepare(
+        "SELECT realized_pnl_usd AS pnl FROM pm_windows WHERE status = 'SETTLED' AND (up_shares > 0 OR down_shares > 0) ORDER BY start_ts ASC",
+      )
+      .all()
+      .map((r) => Number(r.pnl || 0));
+
+    let grossWin = 0;
+    let grossLoss = 0;
+    let eq = 0;
+    let peak = 0;
+    let maxDd = 0;
+    for (const p of settledPnls) {
+      if (p > 0) grossWin += p;
+      else grossLoss += Math.abs(p);
+      eq += p;
+      if (eq > peak) peak = eq;
+      if (peak - eq > maxDd) maxDd = peak - eq;
+    }
+
+    const n = settledPnls.length;
+    const profitFactor =
+      grossLoss > 0 ? grossWin / grossLoss : grossWin > 0 ? 99 : 0;
+    const mean = n > 0 ? eq / n : 0;
+    const sd =
+      n > 1
+        ? Math.sqrt(
+            settledPnls.reduce((s, p) => s + Math.pow(p - mean, 2), 0) /
+              (n - 1),
+          )
+        : 0;
+    const tStat = sd > 0 ? mean / (sd / Math.sqrt(n)) : 0;
+    const promotionReady = n >= 100 && profitFactor >= 1.25 && tStat >= 2.0;
+
     return {
       windows: agg.windows || 0,
       settled: agg.settled || 0,
@@ -552,7 +597,58 @@ class ApexDb {
       realizedPnlUsd: Number((agg.realized_pnl || 0).toFixed(2)),
       totalVolumeUsd: Number((agg.total_volume || 0).toFixed(2)),
       tradesCount,
+      profitFactor: Number(profitFactor.toFixed(2)),
+      tStat: Number(tStat.toFixed(2)),
+      maxDdUsd: Number(maxDd.toFixed(2)),
+      promotionReady,
     };
+  }
+
+  creditAlphaWhale({ wallet, role = "WHALE", symbol, mint, isWin = true }) {
+    if (!wallet) return;
+    const now = Date.now();
+    this.db
+      .prepare(
+        `
+      INSERT INTO alpha_whales (wallet, role, win_tokens, total_tokens, best_symbol, best_mint, last_seen)
+      VALUES (?, ?, ?, 1, ?, ?, ?)
+      ON CONFLICT(wallet) DO UPDATE SET
+        win_tokens = win_tokens + ?,
+        total_tokens = total_tokens + 1,
+        best_symbol = COALESCE(excluded.best_symbol, alpha_whales.best_symbol),
+        best_mint = COALESCE(excluded.best_mint, alpha_whales.best_mint),
+        last_seen = excluded.last_seen
+    `,
+      )
+      .run(
+        wallet,
+        role,
+        isWin ? 1 : 0,
+        symbol || null,
+        mint || null,
+        now,
+        isWin ? 1 : 0,
+      );
+  }
+
+  getAlphaWhales(wallets) {
+    if (!wallets || !wallets.length) return [];
+    const unique = [...new Set(wallets.filter(Boolean))];
+    if (!unique.length) return [];
+    const ph = unique.map(() => "?").join(",");
+    return this.db
+      .prepare(
+        `SELECT * FROM alpha_whales WHERE wallet IN (${ph}) AND win_tokens >= 1 ORDER BY win_tokens DESC`,
+      )
+      .all(...unique);
+  }
+
+  listAlphaWhales(limit = 50) {
+    return this.db
+      .prepare(
+        "SELECT * FROM alpha_whales ORDER BY win_tokens DESC, total_tokens DESC, last_seen DESC LIMIT ?",
+      )
+      .all(limit);
   }
 
   resetPmData() {
@@ -573,6 +669,9 @@ class ApexDb {
     const creatorsTracked = this.db
       .prepare("SELECT COUNT(*) AS c FROM creator_memory")
       .get().c;
+    const alphaWhales = this.db
+      .prepare("SELECT COUNT(*) AS c FROM alpha_whales WHERE win_tokens >= 1")
+      .get().c;
     const trades = this.db
       .prepare(
         "SELECT COUNT(*) AS c, COALESCE(SUM(pnl_usd), 0) AS pnl FROM paper_trades",
@@ -584,6 +683,7 @@ class ApexDb {
       dangerScans,
       operatorsTracked,
       creatorsTracked,
+      alphaWhales,
       paperTrades: trades.c,
       paperPnlUsd: Number(trades.pnl.toFixed(2)),
     };

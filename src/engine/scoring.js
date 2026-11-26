@@ -456,6 +456,7 @@ function scoreAlphaAndMicrostructure({
   holders,
   operators,
   safety,
+  whaleHits = [],
 }) {
   const m5 = market && market.m5;
   const h1 = market && market.h1;
@@ -539,6 +540,13 @@ function scoreAlphaAndMicrostructure({
     orderflowScore + velocityScore + washScore + exitScore + breadthScore,
   );
   const warnings = [];
+  if (whaleHits && whaleHits.length > 0) {
+    const bonus = Math.min(15, whaleHits.length * 8);
+    total = Math.min(100, total + bonus);
+    warnings.push(
+      `ALPHA_WHALES DETECTED: ${whaleHits.length} proven winning wallet(s) (+${bonus} Alpha bonus)`,
+    );
+  }
   if (turnoverToLiq != null && turnoverToLiq > LIMITS.washRatioSoft) {
     warnings.push(
       `Elevated Turnover/Liq (${turnoverToLiq.toFixed(1)}x) — possible wash-trading bot churn`,

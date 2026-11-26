@@ -270,6 +270,7 @@ function renderHolders(scan) {
       <div>
         <span>${shortAddr(h.owner)}</span>
         ${h.op ? `<span class="tag op">${esc(h.op)}</span>` : ""}
+        ${h.whale ? `<span class="tag whale">WHALE (${h.whaleWins || 1})</span>` : ""}
         ${h.dev ? '<span class="tag dev">DEV</span>' : ""}
         ${h.virgin ? '<span class="tag fresh">FRESH</span>' : ""}
         ${h.sniper ? '<span class="tag sniper">SNIPER</span>' : ""}
@@ -490,11 +491,13 @@ function renderSphereFrame() {
     const color =
       n.isRoot || n.dev
         ? "#ef4444"
-        : n.op
-          ? "#d946ef"
-          : n.virgin
-            ? "#f59e0b"
-            : "#10b981";
+        : n.whale
+          ? "#fde047"
+          : n.op
+            ? "#d946ef"
+            : n.virgin
+              ? "#f59e0b"
+              : "#10b981";
 
     // Luminous ray from core to major holders
     if (!n.isRoot) {
@@ -570,7 +573,9 @@ async function loadHealth() {
     $("statLaunches").textContent = h.stats.launches;
     $("statScans").textContent = h.stats.scans;
     $("statMemory").textContent =
-      h.stats.operatorsTracked + h.stats.creatorsTracked;
+      h.stats.operatorsTracked +
+      h.stats.creatorsTracked +
+      (h.stats.alphaWhales || 0);
     $("statPnl").textContent = fmtUsd(h.stats.paperPnlUsd);
     $("statPnl").className =
       `v ${h.stats.paperPnlUsd >= 0 ? "c-good" : "c-bad"}`;
@@ -622,6 +627,26 @@ async function loadTabData() {
         drawMatrix(full);
       });
     });
+  } else if (state.activeTab === "whales") {
+    const { whales } = await api("/api/whales");
+    if (!whales.length) {
+      body.innerHTML =
+        '<div class="empty">Белый список ALPHA_WHALES пока пуст. Нажми DISCOVER WHALES, чтобы проиндексировать победителей DexScreener.</div>';
+      return;
+    }
+    body.innerHTML = `
+      <table>
+        <thead><tr><th>ROLE</th><th>WALLET</th><th>WIN TOKENS</th><th>SEEN TOKENS</th><th>BEST TOKEN</th></tr></thead>
+        <tbody>
+          ${whales
+            .map(
+              (w) =>
+                `<tr><td><span class="tag whale">${esc(w.role)}</span></td><td>${esc(w.wallet)}</td><td class="c-good"><strong>${w.win_tokens}</strong></td><td>${w.total_tokens}</td><td>$${esc(w.best_symbol || "?")}</td></tr>`,
+            )
+            .join("")}
+        </tbody>
+      </table>
+    `;
   } else if (state.activeTab === "memory") {
     const { operators, creators } = await api("/api/memory");
     body.innerHTML = `
@@ -795,6 +820,41 @@ function initEvents() {
     }
   });
 
+  $("pmModeBtn").addEventListener("click", async () => {
+    const nextMode =
+      state.pmState && state.pmState.mode === "MAKER_ARB"
+        ? "TAKER_HYBRID"
+        : "MAKER_ARB";
+    const res = await api("/api/pm/mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: nextMode }),
+    });
+    if (res.state) {
+      state.pmState = res.state;
+      renderPolymarket();
+    }
+  });
+
+  $("discoverWhalesBtn").addEventListener("click", async () => {
+    const btn = $("discoverWhalesBtn");
+    btn.disabled = true;
+    btn.textContent = "INDEXING...";
+    try {
+      await api("/api/whales/discover", { method: "POST" });
+      state.activeTab = "whales";
+      document
+        .querySelectorAll(".tab")
+        .forEach((t) =>
+          t.classList.toggle("active", t.dataset.tab === "whales"),
+        );
+      await Promise.all([loadHealth(), loadTabData()]);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "DISCOVER WHALES";
+    }
+  });
+
   $("pmResetBtn").addEventListener("click", async () => {
     await api("/api/pm/reset", { method: "POST" });
     await loadPolymarketState();
@@ -855,11 +915,21 @@ function renderPolymarket() {
   $("pmPnl").className = `v ${s.realizedPnlUsd >= 0 ? "c-good" : "c-bad"}`;
   $("pmMatched").textContent = `${s.matchedPct ?? 0}%`;
   $("pmWinRate").textContent = `${s.winRatePct ?? 0}%`;
+  $("pmPf").textContent = `${s.profitFactor ?? 0}`;
+  $("pmPf").className = `v ${(s.profitFactor || 0) >= 1.25 ? "c-good" : ""}`;
+  $("pmTstat").textContent = `${s.tStat ?? 0} / $${s.maxDdUsd ?? 0}`;
   $("pmWindows").textContent = `${s.windows ?? 0} (${s.settled ?? 0})`;
-  $("pmFills").textContent = s.tradesCount ?? 0;
-  $("pmVol").textContent = fmtUsd(s.totalVolumeUsd);
+  $("pmGate").textContent = s.promotionReady ? "READY LIVE" : "PAPER ONLY";
+  $("pmGate").className = `v ${s.promotionReady ? "c-good" : "c-warn"}`;
   $("pmBinance").textContent = pm.binanceConnected ? "LIVE" : "OFFLINE";
   $("pmBinance").className = `v ${pm.binanceConnected ? "c-good" : "c-bad"}`;
+
+  const mbtn = $("pmModeBtn");
+  const isMaker = pm.mode !== "TAKER_HYBRID";
+  mbtn.textContent = isMaker
+    ? "MODE: MAKER ARB (0% FEE)"
+    : "MODE: TAKER HYBRID";
+  mbtn.className = `pm-btn ${isMaker ? "active" : ""}`;
 
   const tbtn = $("pmToggleBtn");
   tbtn.textContent = pm.enabled ? "AUTO PAPER: ON" : "AUTO PAPER: PAUSED";
@@ -873,6 +943,12 @@ function renderPolymarket() {
         m.upBestAsk != null ? `${(m.upBestAsk * 100).toFixed(1)}¢` : "—";
       const dnAsk =
         m.downBestAsk != null ? `${(m.downBestAsk * 100).toFixed(1)}¢` : "—";
+      const qUp = m.restingUpBid
+        ? `${(m.restingUpBid.price * 100).toFixed(0)}¢`
+        : "—";
+      const qDn = m.restingDownBid
+        ? `${(m.restingDownBid.price * 100).toFixed(0)}¢`
+        : "—";
       const fp = (m.fairPUp * 100).toFixed(1);
       const spotTxt = m.spot
         ? `$${Number(m.spot).toLocaleString(undefined, { maximumFractionDigits: 3 })}`
@@ -891,7 +967,7 @@ function renderPolymarket() {
           <div class="pm-card-grid">
             <div class="mkt-cell"><span class="k">SPOT / STRIKE</span><span class="v">${spotTxt} / ${openTxt}</span></div>
             <div class="mkt-cell"><span class="k">KALMAN FAIR P(UP)</span><span class="v c-good">${fp}%</span></div>
-            <div class="mkt-cell"><span class="k">ASK UP / DOWN</span><span class="v">${upAsk} / ${dnAsk}</span></div>
+            <div class="mkt-cell"><span class="k">ASK / MY BID (UP·DN)</span><span class="v">${upAsk}·${dnAsk} / <span class="c-good">${qUp}·${qDn}</span></span></div>
             <div class="mkt-cell"><span class="k">UP / DN / MATCH</span><span class="v">${Math.round(w.up_shares || 0)} / ${Math.round(w.down_shares || 0)} / <span class="c-good">${Math.round(w.matched_shares || 0)}</span></span></div>
           </div>
         </div>

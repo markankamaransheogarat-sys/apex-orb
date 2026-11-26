@@ -21,6 +21,7 @@ const { scanToken } = require("./engine/scanner");
 const { LaunchRadar } = require("./engine/radar");
 const { refreshPaperTrades } = require("./engine/paper");
 const { PolymarketPaperEngine } = require("./polymarket/engine");
+const { discoverAlphaWhales } = require("./engine/whales");
 
 const PUBLIC_DIR = path.resolve(__dirname, "..", "public");
 
@@ -306,6 +307,22 @@ function createApp(opts = {}) {
       if (req.method === "POST" && pathname === "/api/pm/reset") {
         const state = pm ? await pm.reset() : { stats: db.pmStats() };
         return sendJson(res, 200, { ok: true, state });
+      }
+
+      if (req.method === "POST" && pathname === "/api/pm/mode") {
+        const body = await readBody(req);
+        if (!pm) return sendJson(res, 400, { error: "PM engine disabled" });
+        const mode = pm.setMode(body.mode);
+        return sendJson(res, 200, { ok: true, mode, state: pm.snapshot() });
+      }
+
+      if (req.method === "GET" && pathname === "/api/whales") {
+        return sendJson(res, 200, { whales: db.listAlphaWhales(50) });
+      }
+
+      if (req.method === "POST" && pathname === "/api/whales/discover") {
+        const out = await discoverAlphaWhales({ db, rpc, maxTokens: 5 });
+        return sendJson(res, 200, out);
       }
 
       // Static files from public/

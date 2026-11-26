@@ -531,6 +531,11 @@ body {
   background: rgba(34, 211, 238, 0.15);
   color: var(--cyan);
 }
+.tag.whale {
+  background: rgba(250, 204, 21, 0.22);
+  color: #fde047;
+  border: 1px solid rgba(250, 204, 21, 0.4);
+}
 
 .bottom-deck {
   margin: 0 14px 16px;

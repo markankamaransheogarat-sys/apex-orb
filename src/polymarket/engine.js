@@ -15,6 +15,7 @@ const {
   twapDigitalFairP,
   evaluatePolymarketStep,
 } = require("./fairp");
+const { computeMakerPlan, checkRestingBidFill } = require("./maker");
 
 const ASSETS = [
   {
@@ -72,6 +73,7 @@ class PolymarketPaperEngine extends EventEmitter {
     super();
     this.db = db;
     this.enabled = true;
+    this.mode = "MAKER_ARB"; // MAKER_ARB (0% fee passive pair-arb) | TAKER_HYBRID
     this.running = false;
     this.binanceConnected = false;
     this.ws = null;
@@ -102,6 +104,8 @@ class PolymarketPaperEngine extends EventEmitter {
         upBestBid: null,
         downBestAsk: null,
         downBestBid: null,
+        restingUpBid: null,
+        restingDownBid: null,
         history: [], // up to 80 recent points for Fair-P oscillator chart
       });
     }
@@ -135,12 +139,25 @@ class PolymarketPaperEngine extends EventEmitter {
     return this.enabled;
   }
 
+  setMode(mode) {
+    this.mode = mode === "TAKER_HYBRID" ? "TAKER_HYBRID" : "MAKER_ARB";
+    for (const a of ASSETS) {
+      const st = this.state.get(a.asset);
+      st.restingUpBid = null;
+      st.restingDownBid = null;
+    }
+    this.emit("status", this.snapshot());
+    return this.mode;
+  }
+
   async reset() {
     this.db.resetPmData();
     this.lastTradeAt.clear();
     for (const a of ASSETS) {
       const st = this.state.get(a.asset);
       st.window = null;
+      st.restingUpBid = null;
+      st.restingDownBid = null;
       st.history = [];
     }
     await this._syncWindows();
@@ -451,49 +468,176 @@ class PolymarketPaperEngine extends EventEmitter {
       if (st.history.length > 80) st.history.shift();
 
       if (this.enabled) {
-        const decision = evaluatePolymarketStep({
-          fairPUp: st.fairPUp,
-          upAsks,
-          downAsks,
-          upShares: st.window.up_shares,
-          upCostUsd: st.window.up_cost_usd,
-          downShares: st.window.down_shares,
-          downCostUsd: st.window.down_cost_usd,
-          remainingSec,
-        });
-
-        if (decision) {
-          const throttleKey = `${a.asset}:${decision.side}`;
-          const lastAt = this.lastTradeAt.get(throttleKey) || 0;
-          if (now - lastAt >= 4500) {
-            this.lastTradeAt.set(throttleKey, now);
-            const updatedWin = this.db.recordPmFill({
+        if (this.mode === "MAKER_ARB") {
+          // 1. Check resting Maker BID fills honestly (only when bestAsk <= restingBid.price)
+          const upFill = checkRestingBidFill(
+            st.restingUpBid,
+            st.upBestAsk,
+            upAsks,
+            st.fairPUp,
+          );
+          if (
+            upFill &&
+            now - (this.lastTradeAt.get(`${a.asset}:UP`) || 0) >= 3500
+          ) {
+            this.lastTradeAt.set(`${a.asset}:UP`, now);
+            st.restingUpBid = null;
+            const uw = this.db.recordPmFill({
               windowSlug: st.window.slug,
               asset: a.asset,
-              side: decision.side,
-              shares: decision.fill.shares,
-              price: decision.fill.effectivePrice,
-              feeUsd: decision.fill.feeUsd,
-              costUsd: decision.fill.costUsd,
-              fairP: Number(decision.fairP.toFixed(4)),
-              edge: decision.edge,
-              reason: decision.reason,
+              side: "UP",
+              shares: upFill.shares,
+              price: upFill.price,
+              feeUsd: 0,
+              costUsd: upFill.costUsd,
+              fairP: Number(upFill.fairP.toFixed(4)),
+              edge: upFill.edge,
+              reason: `MAKER_BID_FILL @${(upFill.price * 100).toFixed(0)}¢ (0% fee)`,
               ts: now,
             });
-            if (updatedWin) {
-              st.window = updatedWin;
+            if (uw) {
+              st.window = uw;
               this.emit("pm_fill", {
+                windowSlug: st.window.slug,
+                asset: a.asset,
+                side: "UP",
+                ...upFill,
+                ts: now,
+              });
+            }
+          }
+
+          const dnFill = checkRestingBidFill(
+            st.restingDownBid,
+            st.downBestAsk,
+            downAsks,
+            1 - st.fairPUp,
+          );
+          if (
+            dnFill &&
+            now - (this.lastTradeAt.get(`${a.asset}:DOWN`) || 0) >= 3500
+          ) {
+            this.lastTradeAt.set(`${a.asset}:DOWN`, now);
+            st.restingDownBid = null;
+            const uw = this.db.recordPmFill({
+              windowSlug: st.window.slug,
+              asset: a.asset,
+              side: "DOWN",
+              shares: dnFill.shares,
+              price: dnFill.price,
+              feeUsd: 0,
+              costUsd: dnFill.costUsd,
+              fairP: Number(dnFill.fairP.toFixed(4)),
+              edge: dnFill.edge,
+              reason: `MAKER_BID_FILL @${(dnFill.price * 100).toFixed(0)}¢ (0% fee)`,
+              ts: now,
+            });
+            if (uw) {
+              st.window = uw;
+              this.emit("pm_fill", {
+                windowSlug: st.window.slug,
+                asset: a.asset,
+                side: "DOWN",
+                ...dnFill,
+                ts: now,
+              });
+            }
+          }
+
+          // 2. Compute new Skewed Maker Quotes or Instant Arb Lock
+          const plan = computeMakerPlan({
+            fairPUp: st.fairPUp,
+            upBestBid: st.upBestBid,
+            upBestAsk: st.upBestAsk,
+            downBestBid: st.downBestBid,
+            downBestAsk: st.downBestAsk,
+            upAsks,
+            downAsks,
+            upShares: st.window.up_shares,
+            upCostUsd: st.window.up_cost_usd,
+            downShares: st.window.down_shares,
+            downCostUsd: st.window.down_cost_usd,
+            remainingSec,
+          });
+
+          if (plan.instantTake) {
+            const d = plan.instantTake;
+            const tk = `${a.asset}:${d.side}`;
+            if (now - (this.lastTradeAt.get(tk) || 0) >= 3500) {
+              this.lastTradeAt.set(tk, now);
+              const uw = this.db.recordPmFill({
+                windowSlug: st.window.slug,
+                asset: a.asset,
+                side: d.side,
+                shares: d.fill.shares,
+                price: d.fill.effectivePrice,
+                feeUsd: d.fill.feeUsd,
+                costUsd: d.fill.costUsd,
+                fairP: Number(d.fairP.toFixed(4)),
+                edge: d.edge,
+                reason: d.reason,
+                ts: now,
+              });
+              if (uw) {
+                st.window = uw;
+                this.emit("pm_fill", {
+                  windowSlug: st.window.slug,
+                  asset: a.asset,
+                  side: d.side,
+                  ...d.fill,
+                  reason: d.reason,
+                  ts: now,
+                });
+              }
+            }
+          }
+          st.restingUpBid = plan.upBid;
+          st.restingDownBid = plan.downBid;
+        } else {
+          const decision = evaluatePolymarketStep({
+            fairPUp: st.fairPUp,
+            upAsks,
+            downAsks,
+            upShares: st.window.up_shares,
+            upCostUsd: st.window.up_cost_usd,
+            downShares: st.window.down_shares,
+            downCostUsd: st.window.down_cost_usd,
+            remainingSec,
+          });
+
+          if (decision) {
+            const throttleKey = `${a.asset}:${decision.side}`;
+            const lastAt = this.lastTradeAt.get(throttleKey) || 0;
+            if (now - lastAt >= 4500) {
+              this.lastTradeAt.set(throttleKey, now);
+              const updatedWin = this.db.recordPmFill({
                 windowSlug: st.window.slug,
                 asset: a.asset,
                 side: decision.side,
                 shares: decision.fill.shares,
                 price: decision.fill.effectivePrice,
+                feeUsd: decision.fill.feeUsd,
                 costUsd: decision.fill.costUsd,
-                fairP: decision.fairP,
+                fairP: Number(decision.fairP.toFixed(4)),
                 edge: decision.edge,
                 reason: decision.reason,
                 ts: now,
               });
+              if (updatedWin) {
+                st.window = updatedWin;
+                this.emit("pm_fill", {
+                  windowSlug: st.window.slug,
+                  asset: a.asset,
+                  side: decision.side,
+                  shares: decision.fill.shares,
+                  price: decision.fill.effectivePrice,
+                  costUsd: decision.fill.costUsd,
+                  fairP: decision.fairP,
+                  edge: decision.edge,
+                  reason: decision.reason,
+                  ts: now,
+                });
+              }
             }
           }
         }
@@ -564,6 +708,8 @@ class PolymarketPaperEngine extends EventEmitter {
         upBestBid: st.upBestBid,
         downBestAsk: st.downBestAsk,
         downBestBid: st.downBestBid,
+        restingUpBid: st.restingUpBid,
+        restingDownBid: st.restingDownBid,
         twapAvg: st.twapCount > 0 ? st.twapSum / st.twapCount : st.spot,
         remainingSec: w ? Math.max(0, Math.round((w.end_ts - now) / 1000)) : 0,
         window: w,
@@ -574,6 +720,7 @@ class PolymarketPaperEngine extends EventEmitter {
 
     return {
       enabled: this.enabled,
+      mode: this.mode,
       binanceConnected: this.binanceConnected,
       stats: this.db.pmStats(),
       markets,
