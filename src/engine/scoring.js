@@ -205,6 +205,38 @@ function evaluateGuard({
 }
 
 function scoreSafety(holders, operators, ctx) {
+  if (!holders || holders.length === 0) {
+    return {
+      score: null,
+      band: "UNAVAILABLE",
+      state: "unavailable",
+      parts: {
+        operator: 0,
+        virgin: 0,
+        transfer: 0,
+        sniper: 0,
+        concentration: 0,
+      },
+      metrics: {
+        impact: 0,
+        operatorShare: 0,
+        virgin: 0,
+        transfer: 0,
+        sniper: 0,
+        concentration: 0,
+        unread: 0,
+      },
+      gates: [
+        {
+          hard: false,
+          note: true,
+          text: "Holders unavailable (RPC rate limit) — no silent pass",
+        },
+      ],
+      scenario: null,
+      headline: "Holders could not be read from Solana RPC",
+    };
+  }
   const F = ctx.floatTokens || 1;
   const R = ctx.reserveTokens || 0;
   const unread = ctx.unread || 0;
@@ -501,11 +533,15 @@ function scoreAlphaAndMicrostructure({
   });
 
   // Matrix classification: Safety x Alpha
-  const safeHigh = safety.score >= 65;
+  const safeScoreVal = safety && safety.score != null ? safety.score : 0;
+  const safeHigh = safeScoreVal >= 65;
   const alphaHigh = total >= 62;
   let quadrant = "TOXIC_AVOID";
   let action = "SKIP";
-  if (safeHigh && alphaHigh) {
+  if (safety && safety.score == null) {
+    quadrant = "UNAVAILABLE";
+    action = "RETRY_RPC";
+  } else if (safeHigh && alphaHigh) {
     quadrant = "SNIPER_GEM";
     action = "PAPER_ENTER";
   } else if (safeHigh && !alphaHigh) {
@@ -542,7 +578,7 @@ function scoreAlphaAndMicrostructure({
     matrix: {
       quadrant,
       action,
-      safety: safety.score,
+      safety: safety ? safety.score : null,
       alpha: total,
       suggestedSlPct: -20,
       suggestedTpPct: safeHigh && alphaHigh ? 50 : 30,

@@ -158,35 +158,94 @@ async function scanToken(mint, { rpc, db, onTrace } = {}) {
   }
 
   // Step 2: Resolve largest token accounts -> owners -> filter infrastructure
-  const rawLargest = (largestRes && largestRes.value) || [];
-  const tokenAccountAddrs = rawLargest.map((a) => a.address).filter(Boolean);
-  const accDetails = tokenAccountAddrs.length
-    ? await rpc
-        .getMultipleAccounts(tokenAccountAddrs, "jsonParsed", { budget })
-        .catch(() => ({ value: [] }))
-    : { value: [] };
-
+  let creator = (curve && curve.creator) || null;
+  let rawLargest = (largestRes && largestRes.value) || [];
   const ownerBalances = new Map();
   let infraTokens = 0;
+  const knownPoolAddrs = new Set(
+    (market.pools || []).map((p) => p.pool).filter(Boolean),
+  );
 
-  (accDetails.value || []).forEach((acc, idx) => {
-    const entry = rawLargest[idx];
-    const uiAmount = entry ? Number(entry.uiAmount || 0) : 0;
-    if (!acc || !acc.data || !acc.data.parsed || uiAmount <= 0) return;
-    const owner = acc.data.parsed.info && acc.data.parsed.info.owner;
-    if (!owner) return;
+  if (rawLargest.length > 0) {
+    const tokenAccountAddrs = rawLargest.map((a) => a.address).filter(Boolean);
+    const accDetails = tokenAccountAddrs.length
+      ? await rpc
+          .getMultipleAccounts(tokenAccountAddrs, "jsonParsed", { budget })
+          .catch(() => ({ value: [] }))
+      : { value: [] };
 
-    const isInfraAddr =
-      Boolean(INFRA_ADDR[owner]) ||
-      owner === bcAddr ||
-      (market.pickedPool && owner === market.pickedPool.pool);
-    const isInfraProg = Boolean(INFRA_PROGRAMS[acc.owner]);
-    if (isInfraAddr || isInfraProg) {
-      infraTokens += uiAmount;
-      return;
+    (accDetails.value || []).forEach((acc, idx) => {
+      const entry = rawLargest[idx];
+      const uiAmount = entry
+        ? Number(entry.uiAmountString || entry.uiAmount || 0)
+        : 0;
+      if (!acc || !acc.data || !acc.data.parsed || uiAmount <= 0) return;
+      const owner = acc.data.parsed.info && acc.data.parsed.info.owner;
+      if (!owner) return;
+
+      const isInfraAddr =
+        Boolean(INFRA_ADDR[owner]) ||
+        owner === bcAddr ||
+        knownPoolAddrs.has(owner);
+      const isInfraProg = Boolean(INFRA_PROGRAMS[acc.owner]);
+      if (isInfraAddr || isInfraProg) {
+        infraTokens += uiAmount;
+        return;
+      }
+      ownerBalances.set(owner, (ownerBalances.get(owner) || 0) + uiAmount);
+    });
+  } else {
+    logStep(
+      `RPC getTokenLargestAccounts unavailable (${(largestRes && largestRes.error) || "empty"}) — trying RugCheck fallback…`,
+      "warn",
+    );
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 5500);
+      const rcRes = await fetch(
+        `https://api.rugcheck.xyz/v1/tokens/${mint}/report`,
+        {
+          headers: { "User-Agent": "ApexOrb-Quant-Scanner/1.0" },
+          signal: ctrl.signal,
+        },
+      );
+      clearTimeout(timer);
+      if (rcRes.ok) {
+        const rc = await rcRes.json();
+        if (!creator && rc.creator) creator = rc.creator;
+        for (const mk of rc.markets || []) {
+          if (mk.pubkey) knownPoolAddrs.add(mk.pubkey);
+          if (mk.lp && mk.lp.lpMint) knownPoolAddrs.add(mk.lp.lpMint);
+          if (mk.lp && mk.lp.base) knownPoolAddrs.add(mk.lp.base);
+          if (mk.lp && mk.lp.quote) knownPoolAddrs.add(mk.lp.quote);
+        }
+        const rcHolders = rc.topHolders || [];
+        for (const h of rcHolders) {
+          const uiAmount =
+            Number(h.uiAmountString || h.uiAmount || 0) ||
+            (h.amount && h.decimals != null
+              ? h.amount / Math.pow(10, h.decimals)
+              : 0);
+          const owner = h.owner;
+          if (!owner || uiAmount <= 0) continue;
+          if (
+            Boolean(INFRA_ADDR[owner]) ||
+            owner === bcAddr ||
+            knownPoolAddrs.has(owner)
+          ) {
+            infraTokens += uiAmount;
+            continue;
+          }
+          ownerBalances.set(owner, (ownerBalances.get(owner) || 0) + uiAmount);
+        }
+        logStep(
+          `RugCheck fallback loaded ${ownerBalances.size} non-pool holders`,
+        );
+      }
+    } catch (e) {
+      logStep(`RugCheck fallback failed: ${e.message}`, "warn");
     }
-    ownerBalances.set(owner, (ownerBalances.get(owner) || 0) + uiAmount);
-  });
+  }
 
   // Check if owners themselves are PDA / program-owned pools
   const candidateOwners = [...ownerBalances.entries()]
@@ -211,7 +270,8 @@ async function scanToken(mint, { rpc, db, onTrace } = {}) {
     });
   }
 
-  const floatTokens = Math.max(1, totalSupply - infraTokens);
+  const holderSum = [...ownerBalances.values()].reduce((a, b) => a + b, 0);
+  const floatTokens = Math.max(1, holderSum, totalSupply - infraTokens);
   const sortedHolders = [...ownerBalances.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, BUDGET.maxHoldersToInspect)
@@ -243,7 +303,6 @@ async function scanToken(mint, { rpc, db, onTrace } = {}) {
   // Step 3: Inspect mint earliest signatures for launch slot & creator verification
   let launchSlot = null;
   let launchTimeMs = market.createdAt || null;
-  let creator = (curve && curve.creator) || null;
   let slot0Share = null;
 
   try {

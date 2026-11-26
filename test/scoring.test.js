@@ -126,3 +126,10 @@ test("evaluateShield and evaluateGuard detect serial creators and heavy dev buys
   assert.equal(g.pass, false);
   assert.match(g.reason, /slot-0/i);
 });
+
+test("scoreSafety never gives a silent pass when holders list is empty", () => {
+  const unavailable = scoreSafety([], [], { floatTokens: 1, reserveTokens: 0 });
+  assert.equal(unavailable.score, null);
+  assert.equal(unavailable.band, "UNAVAILABLE");
+  assert.equal(unavailable.state, "unavailable");
+});

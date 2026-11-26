@@ -157,7 +157,7 @@ function renderVerdict(scan) {
 
   $("tokenHeader").textContent =
     `$${scan.token.symbol} · ${shortAddr(scan.mint)}`;
-  $("safetyScore").textContent = s.score;
+  $("safetyScore").textContent = s.score == null ? "N/A" : s.score;
   $("safetyScore").className =
     `sc-val ${s.band === "CLEAN" ? "c-good" : s.band === "OK" ? "" : s.band === "RISKY" ? "c-warn" : "c-bad"}`;
   $("safetyBand").textContent =
@@ -293,7 +293,7 @@ function drawMatrix(scan) {
   ctx.fillStyle = "#ef4444";
   ctx.fillText("TOXIC AVOID", 8, h - 8);
 
-  if (scan) {
+  if (scan && scan.safety.score != null) {
     const px = (scan.safety.score / 100) * (w - 20) + 10;
     const py = h - ((scan.alpha.score / 100) * (h - 20) + 10);
     ctx.beginPath();
